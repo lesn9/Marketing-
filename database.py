@@ -8,6 +8,10 @@ from typing import Any
 import aiosqlite
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+    k TEXT PRIMARY KEY,
+    v TEXT
+);
 CREATE TABLE IF NOT EXISTS watches (
     user_id INTEGER NOT NULL,
     key TEXT NOT NULL,
@@ -109,3 +113,15 @@ class DB:
         if int(time.time()) - int(row["updated_at"]) > max_age:
             return None
         return json.loads(row["payload_json"] or "{}")
+
+    async def get_meta(self, k: str) -> str | None:
+        cur = await self.c.execute("SELECT v FROM meta WHERE k=?", (k,))
+        row = await cur.fetchone()
+        return row["v"] if row else None
+
+    async def set_meta(self, k: str, v: str) -> None:
+        await self.c.execute(
+            "INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            (k, v),
+        )
+        await self.c.commit()

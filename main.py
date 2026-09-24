@@ -53,19 +53,25 @@ def esc(s: object) -> str:
     return html.escape("" if s is None else str(s))
 
 
-def allowed(uid: int) -> bool:
-    if not config.ALLOWED_USER_IDS:
-        return True
-    return uid in config.ALLOWED_USER_IDS
+def allowed(uid: int, app: Application | None = None) -> bool:
+    """Env ALLOWED_USER_IDS wins; else locked owner from first /start."""
+    if config.ALLOWED_USER_IDS:
+        return uid in config.ALLOWED_USER_IDS
+    if app is not None:
+        owners = app.bot_data.get("owners") or []
+        if owners:
+            return uid in owners
+    return True  # open only until first /start locks
 
 
-async def gate(update: Update) -> bool:
+async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE | None = None) -> bool:
     u = update.effective_user
     if not u:
         return False
-    if not allowed(u.id):
+    app = context.application if context else None
+    if not allowed(u.id, app):
         if update.effective_message:
-            await update.effective_message.reply_text("Private bot.")
+            await update.effective_message.reply_text("Private bot — access denied.")
         return False
     return True
 
@@ -159,18 +165,43 @@ async def run_engine(update: Update, context: ContextTypes.DEFAULT_TYPE, args: l
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if await gate(update):
-        await update.effective_message.reply_html("📣 <b>Online.</b>\n\n" + HELP)
+    u = update.effective_user
+    if not u:
+        return
+    db: DB = context.application.bot_data["db"]
+    # Auto-lock: first person to /start becomes sole owner (unless ALLOWED_USER_IDS set)
+    if not config.ALLOWED_USER_IDS:
+        owners = context.application.bot_data.get("owners") or []
+        if not owners:
+            raw = await db.get_meta("owner_id")
+            if raw and raw.isdigit():
+                owners = [int(raw)]
+            else:
+                owners = [u.id]
+                await db.set_meta("owner_id", str(u.id))
+                log.info("Locked bot to owner_id=%s", u.id)
+            context.application.bot_data["owners"] = owners
+        if u.id not in owners:
+            await update.effective_message.reply_text("Private bot — access denied.")
+            return
+    elif not allowed(u.id, context.application):
+        await update.effective_message.reply_text("Private bot — access denied.")
+        return
+    await update.effective_message.reply_html(
+        "📣 <b>Online.</b>\n"
+        f"Access locked to your account (<code>{u.id}</code>).\n\n" + HELP
+    )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if await gate(update):
+    if await gate(update, context):
         await update.effective_message.reply_html(HELP)
 
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update):
+    if not await gate(update, context):
         return
+    owners = context.application.bot_data.get("owners") or config.ALLOWED_USER_IDS or []
     await update.effective_message.reply_html(
         "⚙️ <b>Settings</b>\n"
         f"Build: <code>{esc(config.BUILD)}</code>\n"
@@ -179,10 +210,10 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"Groq model: <code>{esc(config.GROQ_MODEL)}</code>\n"
         f"OR model: <code>{esc(config.OPENROUTER_MODEL)}</code>\n"
         f"X Bearer: {'set' if config.X_BEARER_TOKEN else 'not set (ok — use @handle)'}\n"
-        f"Allowed users: {config.ALLOWED_USER_IDS or 'open'}\n"
+        f"Access: locked to {owners or 'will lock on first /start'}\n"
         f"DB: <code>{esc(config.DATABASE_PATH)}</code>\n\n"
-        "If AI errors persist with keys set: check rate limits, or set "
-        "<code>GROQ_MODEL=llama-3.1-8b-instant</code>."
+        "OpenRouter only: ensure key is valid. Prefer also setting GROQ_API_KEY.\n"
+        "Telegram 409 Conflict = two bot instances running — stop the extra one."
     )
 
 
@@ -195,7 +226,7 @@ async def _args(update, context, usage: str):
 
 def _handler(name: str, usage: str):
     async def h(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not await gate(update):
+        if not await gate(update, context):
             return
         args = await _args(update, context, usage)
         if args:
@@ -204,7 +235,7 @@ def _handler(name: str, usage: str):
 
 
 async def cmd_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update) or not update.effective_user:
+    if not await gate(update, context) or not update.effective_user:
         return
     args = await _args(update, context, "Usage: <code>/competition @handle|url …</code>")
     if not args:
@@ -242,7 +273,7 @@ async def cb_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     q = update.callback_query
     if not q or not q.data or not update.effective_user:
         return
-    if not allowed(update.effective_user.id):
+    if not allowed(update.effective_user.id, context.application):
         await q.answer("Private", show_alert=True)
         return
     parts = q.data.split(":")
@@ -295,7 +326,7 @@ async def cb_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_competitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update):
+    if not await gate(update, context):
         return
     if not context.args or len(context.args) < 2:
         await update.effective_message.reply_html(
@@ -319,7 +350,7 @@ async def cmd_competitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update):
+    if not await gate(update, context):
         return
     raw = " ".join(context.args or [])
     if "|" not in raw:
@@ -340,7 +371,7 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update) or not update.effective_user:
+    if not await gate(update, context) or not update.effective_user:
         return
     args = await _args(update, context, "Usage: <code>/watch @handle|url</code>")
     if not args:
@@ -353,7 +384,7 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update) or not update.effective_user:
+    if not await gate(update, context) or not update.effective_user:
         return
     args = await _args(update, context, "Usage: <code>/unwatch @handle|url</code>")
     if not args:
@@ -365,7 +396,7 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate(update) or not update.effective_user:
+    if not await gate(update, context) or not update.effective_user:
         return
     rows = await context.application.bot_data["db"].watchlist(update.effective_user.id)
     if not rows:
@@ -377,7 +408,7 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if await gate(update):
+    if await gate(update, context):
         await update.effective_message.reply_text(
             "Watchlist storage is live. Automatic marketing-diff push alerts are staged."
         )
@@ -388,6 +419,16 @@ async def on_start(app: Application) -> None:
     await db.connect()
     app.bot_data["db"] = db
     app.bot_data["comp"] = {}
+    # Restore locked owner
+    if config.ALLOWED_USER_IDS:
+        app.bot_data["owners"] = list(config.ALLOWED_USER_IDS)
+    else:
+        raw = await db.get_meta("owner_id")
+        if raw and raw.isdigit():
+            app.bot_data["owners"] = [int(raw)]
+            log.info("Restored owner lock id=%s", raw)
+        else:
+            app.bot_data["owners"] = []
     cmds = [
         BotCommand("start", "Start"),
         BotCommand("help", "Help"),

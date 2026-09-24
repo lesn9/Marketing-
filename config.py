@@ -30,4 +30,4 @@ OPENROUTER_MODEL = env(
 X_BEARER_TOKEN = env("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN")
 DATABASE_PATH = env("DATABASE_PATH", default="./marketing.db")
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
-BUILD = "2026-09-24-mkt-intel-v3-4files"
+BUILD = "2026-09-24-mkt-intel-v3-lock-ssl-ai"

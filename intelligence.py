@@ -93,11 +93,13 @@ async def complete(prompt: str, *, max_tokens: int = 3200) -> tuple[str | None, 
     if config.OPENROUTER_API_KEY:
         models = [
             config.OPENROUTER_MODEL,
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemma-2-9b-it:free",
-            "mistralai/mistral-7b-instruct:free",
             "openrouter/auto",
-            "nousresearch/hermes-3-llama-3.1-405b:free",
+            "google/gemma-2-9b-it:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "meta-llama/llama-3.2-3b-instruct:free",
+            "mistralai/mistral-7b-instruct:free",
+            "qwen/qwen-2.5-7b-instruct:free",
+            "microsoft/phi-3-mini-128k-instruct:free",
         ]
         text, status, detail = await _chat(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -317,6 +319,48 @@ def extract_handle(value: str) -> str | None:
     return None
 
 
+def _parse_html_site(url: str, html: str, out: dict[str, Any]) -> dict[str, Any]:
+    soup = BeautifulSoup(html[:220_000], "lxml")
+    out["ok"] = True
+    if soup.title and soup.title.string:
+        out["title"] = soup.title.string.strip()[:200]
+    md = soup.find("meta", attrs={"name": "description"}) or soup.find(
+        "meta", attrs={"property": "og:description"}
+    )
+    if md and md.get("content"):
+        out["meta_description"] = md["content"].strip()[:400]
+    for h in soup.find_all(["h1", "h2"])[:14]:
+        t = h.get_text(" ", strip=True)
+        if t:
+            out["headlines"].append(t[:180])
+            if h.name == "h1":
+                out["h1"].append(t[:180])
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    out["text_sample"] = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:4000]
+    for a in soup.find_all("a", href=True)[:220]:
+        href = a["href"].strip()
+        full = urljoin(url, href)
+        low = full.lower()
+        label = a.get_text(" ", strip=True)[:80]
+        if ("x.com/" in low or "twitter.com/" in low) and "intent" not in low:
+            out["links"]["x"].append(full)
+        elif "t.me/" in low or "telegram.me/" in low:
+            out["links"]["telegram"].append(full)
+        elif "discord" in low:
+            out["links"]["discord"].append(full)
+        elif "gitbook" in low or "/docs" in low:
+            out["links"]["docs"].append(full)
+        if any(k in (label + href).lower() for k in ("join", "launch", "app", "buy", "docs", "community", "trade")):
+            if label:
+                out["ctas"].append({"text": label, "href": full})
+    for k in out["links"]:
+        out["links"][k] = _dedupe(out["links"][k])[:8]
+    out["has_community_link"] = bool(out["links"]["telegram"] or out["links"]["discord"])
+    out["ctas"] = out["ctas"][:15]
+    return out
+
+
 async def fetch_website(url: str) -> dict[str, Any]:
     out: dict[str, Any] = {
         "source_type": "website", "url": url, "ok": False, "error": None,
@@ -326,57 +370,33 @@ async def fetch_website(url: str) -> dict[str, Any]:
     }
     if not url.startswith("http"):
         url = "https://" + url
-        out["url"] = url
-    try:
-        async with httpx.AsyncClient(
-            timeout=18, follow_redirects=True,
-            headers={"User-Agent": "Web3MarketingIntel/3.0"},
-        ) as client:
-            resp = await client.get(url)
-            if resp.status_code >= 400:
-                out["error"] = f"HTTP {resp.status_code}"
-                return out
-            soup = BeautifulSoup(resp.text[:220_000], "lxml")
-            out["ok"] = True
-            if soup.title and soup.title.string:
-                out["title"] = soup.title.string.strip()[:200]
-            md = soup.find("meta", attrs={"name": "description"}) or soup.find(
-                "meta", attrs={"property": "og:description"}
-            )
-            if md and md.get("content"):
-                out["meta_description"] = md["content"].strip()[:400]
-            for h in soup.find_all(["h1", "h2"])[:14]:
-                t = h.get_text(" ", strip=True)
-                if t:
-                    out["headlines"].append(t[:180])
-                    if h.name == "h1":
-                        out["h1"].append(t[:180])
-            for tag in soup(["script", "style", "noscript"]):
-                tag.decompose()
-            out["text_sample"] = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:4000]
-            for a in soup.find_all("a", href=True)[:220]:
-                href = a["href"].strip()
-                full = urljoin(url, href)
-                low = full.lower()
-                label = a.get_text(" ", strip=True)[:80]
-                if ("x.com/" in low or "twitter.com/" in low) and "intent" not in low:
-                    out["links"]["x"].append(full)
-                elif "t.me/" in low or "telegram.me/" in low:
-                    out["links"]["telegram"].append(full)
-                elif "discord" in low:
-                    out["links"]["discord"].append(full)
-                elif "gitbook" in low or "/docs" in low:
-                    out["links"]["docs"].append(full)
-                if any(k in (label + href).lower() for k in ("join", "launch", "app", "buy", "docs", "community", "trade")):
-                    if label:
-                        out["ctas"].append({"text": label, "href": full})
-            for k in out["links"]:
-                out["links"][k] = _dedupe(out["links"][k])[:8]
-            out["has_community_link"] = bool(out["links"]["telegram"] or out["links"]["discord"])
-            out["ctas"] = out["ctas"][:15]
-    except Exception as exc:
-        out["error"] = str(exc)[:120]
-        log.warning("website %s: %s", url, exc)
+    out["url"] = url
+    # Strip trailing junk / fix common typos in user paste
+    url = url.strip().rstrip(").,]}")
+    out["url"] = url
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    last_err = None
+    for verify in (True, False):
+        try:
+            async with httpx.AsyncClient(
+                timeout=20, follow_redirects=True, verify=verify, headers=headers,
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code >= 400:
+                    last_err = f"HTTP {resp.status_code}"
+                    continue
+                return _parse_html_site(str(resp.url), resp.text, out)
+        except Exception as exc:
+            last_err = str(exc)[:160]
+            log.warning("website verify=%s %s: %s", verify, url, exc)
+            continue
+    out["error"] = last_err or "fetch failed"
     return out
 
 
