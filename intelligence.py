@@ -66,64 +66,70 @@ Label AI-memory-only picks: ⚠️ INFERRED CANDIDATE
 """
 
 
+LAST_AI_ERROR: str = ""
+
+
 async def complete(prompt: str, *, max_tokens: int = 3200) -> tuple[str | None, str]:
     """Groq → OpenRouter with broad model fallbacks. Returns (text, status)."""
+    global LAST_AI_ERROR
     errors: list[str] = []
 
+    # Small/fast models first — 70b burns free rate limits after 1–2 long reports
     if config.GROQ_API_KEY:
         models = [
+            "llama-3.1-8b-instant",
             config.GROQ_MODEL,
             "llama-3.3-70b-versatile",
-            "llama-3.1-70b-versatile",
-            "llama-3.1-8b-instant",
             "gemma2-9b-it",
-            "mixtral-8x7b-32768",
+            "llama-3.1-70b-versatile",
         ]
         text, status, detail = await _chat(
             "https://api.groq.com/openai/v1/chat/completions",
             config.GROQ_API_KEY,
             models,
             prompt,
-            max_tokens,
+            min(max_tokens, 2800),
         )
         if text:
+            LAST_AI_ERROR = ""
             return text, status
         errors.append(f"groq:{status}:{detail}")
 
     if config.OPENROUTER_API_KEY:
         models = [
-            config.OPENROUTER_MODEL,
             "openrouter/auto",
+            config.OPENROUTER_MODEL,
             "google/gemma-2-9b-it:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
             "meta-llama/llama-3.2-3b-instruct:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
             "mistralai/mistral-7b-instruct:free",
             "qwen/qwen-2.5-7b-instruct:free",
-            "microsoft/phi-3-mini-128k-instruct:free",
         ]
         text, status, detail = await _chat(
             "https://openrouter.ai/api/v1/chat/completions",
             config.OPENROUTER_API_KEY,
             models,
             prompt,
-            max_tokens,
+            min(max_tokens, 2800),
             extra={
                 "HTTP-Referer": "https://github.com/web3-marketing-intel",
                 "X-Title": "Web3 Marketing Intelligence",
             },
         )
         if text:
+            LAST_AI_ERROR = ""
             return text, status
         errors.append(f"openrouter:{status}:{detail}")
 
     if not config.GROQ_API_KEY and not config.OPENROUTER_API_KEY:
+        LAST_AI_ERROR = "no keys"
         return None, "AI_NOT_CONFIGURED"
 
-    log.warning("AI all failed: %s", " | ".join(errors)[:500])
-    # Prefer most specific status
+    LAST_AI_ERROR = " | ".join(errors)[:400]
+    log.warning("AI all failed: %s", LAST_AI_ERROR)
     if any("AUTH" in e for e in errors):
         return None, "AI_AUTH_FAILED"
-    if any("RATE" in e for e in errors):
+    if any("RATE" in e or "429" in e for e in errors):
         return None, "AI_RATE_LIMITED"
     if any("TIMEOUT" in e for e in errors):
         return None, "AI_TIMEOUT"
@@ -641,7 +647,7 @@ def _fallback(kind: str, sources: dict[str, Any], status: str) -> str:
     has_x = bool((sources.get("x") or {}).get("ok"))
     lines = [
         f"⚠️ AI analysis temporarily unavailable ({status}).",
-        "Factual sources collected (strategy layer needs AI):",
+        "Sources collected OK — the AI API call failed (not the website scrape).",
         f"web={'✓' if has_web else '—'} · X={'✓' if has_x else '—'}",
     ]
     if has_web:
@@ -654,13 +660,20 @@ def _fallback(kind: str, sources: dict[str, Any], status: str) -> str:
                 "🕳️ GAP: No obvious public TG/Discord link on website — "
                 "add a primary community CTA in header/hero."
             )
-        if w.get("ctas"):
-            lines.append("CTAs seen: " + ", ".join((c.get("text") or "")[:40] for c in w["ctas"][:5]))
     if has_x:
         lines.append(f"X: @{(sources.get('x') or {}).get('handle')} mode={(sources.get('x') or {}).get('mode')}")
-    if sources.get("limitations"):
-        lines.append("Limits: " + "; ".join(sources["limitations"][:4]))
-    lines.append("Retry in a minute. If this persists, check /settings (key present vs model/rate-limit).")
+    if LAST_AI_ERROR:
+        lines.append(f"Detail: {LAST_AI_ERROR[:300]}")
+    if status == "AI_RATE_LIMITED":
+        lines.append(
+            "⏳ Rate limit — wait 1–5 minutes. Free Groq/OpenRouter limits are easy to hit "
+            "after a few long /market or /funnels reports. Try again shortly."
+        )
+    else:
+        lines.append(
+            "Retry in 1–2 minutes. Check Groq console usage / OpenRouter credits. "
+            "Optional: set GROQ_MODEL=llama-3.1-8b-instant"
+        )
     return "\n".join(lines)
 
 

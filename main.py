@@ -211,9 +211,11 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"OR model: <code>{esc(config.OPENROUTER_MODEL)}</code>\n"
         f"X Bearer: {'set' if config.X_BEARER_TOKEN else 'not set (ok — use @handle)'}\n"
         f"Access: locked to {owners or 'will lock on first /start'}\n"
-        f"DB: <code>{esc(config.DATABASE_PATH)}</code>\n\n"
-        "OpenRouter only: ensure key is valid. Prefer also setting GROQ_API_KEY.\n"
-        "Telegram 409 Conflict = two bot instances running — stop the extra one."
+        f"DB: <code>{esc(config.DATABASE_PATH)}</code>\n"
+        f"Last AI error: <code>{esc(getattr(intel, 'LAST_AI_ERROR', '') or 'none')}</code>\n\n"
+        "If AI worked once then fails → usually <b>rate limit</b>. Wait 2–5 min.\n"
+        "Telegram <b>409 Conflict</b> = same bot token used by two processes "
+        "(two Railway services, or Railway + your PC). Keep only one running."
     )
 
 
