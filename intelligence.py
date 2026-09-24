@@ -69,63 +69,90 @@ Label AI-memory-only picks: ⚠️ INFERRED CANDIDATE
 LAST_AI_ERROR: str = ""
 
 
+def _any_ai_key() -> bool:
+    return bool(
+        config.GROQ_API_KEY
+        or config.GROQ_API_KEY_2
+        or config.OPENROUTER_API_KEY
+        or config.OPENROUTER_API_KEY_2
+        or config.GEMINI_API_KEY
+        or config.CEREBRAS_API_KEY
+    )
+
+
 async def complete(prompt: str, *, max_tokens: int = 3200) -> tuple[str | None, str]:
-    """Groq → OpenRouter with broad model fallbacks. Returns (text, status)."""
+    """Try all configured providers in order. Returns (text, status)."""
     global LAST_AI_ERROR
     errors: list[str] = []
+    mt = min(max_tokens, 2800)
 
-    # Small/fast models first — 70b burns free rate limits after 1–2 long reports
+    groq_models = [
+        "llama-3.1-8b-instant",
+        config.GROQ_MODEL,
+        "llama-3.3-70b-versatile",
+        "gemma2-9b-it",
+        "llama-3.1-70b-versatile",
+    ]
+    or_models = [
+        "openrouter/auto",
+        config.OPENROUTER_MODEL,
+        "google/gemma-2-9b-it:free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "mistralai/mistral-7b-instruct:free",
+        "qwen/qwen-2.5-7b-instruct:free",
+    ]
+    or_extra = {
+        "HTTP-Referer": "https://github.com/web3-marketing-intel",
+        "X-Title": "Web3 Marketing Intelligence",
+    }
+
+    providers: list[tuple[str, str, list[str], dict | None]] = []
     if config.GROQ_API_KEY:
-        models = [
-            "llama-3.1-8b-instant",
-            config.GROQ_MODEL,
-            "llama-3.3-70b-versatile",
-            "gemma2-9b-it",
-            "llama-3.1-70b-versatile",
-        ]
-        text, status, detail = await _chat(
-            "https://api.groq.com/openai/v1/chat/completions",
-            config.GROQ_API_KEY,
-            models,
-            prompt,
-            min(max_tokens, 2800),
-        )
-        if text:
-            LAST_AI_ERROR = ""
-            return text, status
-        errors.append(f"groq:{status}:{detail}")
-
+        providers.append(("groq", config.GROQ_API_KEY, groq_models, None))
+    if config.GROQ_API_KEY_2:
+        providers.append(("groq2", config.GROQ_API_KEY_2, groq_models, None))
+    if config.CEREBRAS_API_KEY:
+        providers.append((
+            "cerebras",
+            config.CEREBRAS_API_KEY,
+            [config.CEREBRAS_MODEL, "llama-3.3-70b", "llama3.1-8b"],
+            None,
+        ))
+    if config.GEMINI_API_KEY:
+        providers.append((
+            "gemini",
+            config.GEMINI_API_KEY,
+            [config.GEMINI_MODEL, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+            None,
+        ))
     if config.OPENROUTER_API_KEY:
-        models = [
-            "openrouter/auto",
-            config.OPENROUTER_MODEL,
-            "google/gemma-2-9b-it:free",
-            "meta-llama/llama-3.2-3b-instruct:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "mistralai/mistral-7b-instruct:free",
-            "qwen/qwen-2.5-7b-instruct:free",
-        ]
-        text, status, detail = await _chat(
-            "https://openrouter.ai/api/v1/chat/completions",
-            config.OPENROUTER_API_KEY,
-            models,
-            prompt,
-            min(max_tokens, 2800),
-            extra={
-                "HTTP-Referer": "https://github.com/web3-marketing-intel",
-                "X-Title": "Web3 Marketing Intelligence",
-            },
-        )
-        if text:
-            LAST_AI_ERROR = ""
-            return text, status
-        errors.append(f"openrouter:{status}:{detail}")
+        providers.append(("openrouter", config.OPENROUTER_API_KEY, or_models, or_extra))
+    if config.OPENROUTER_API_KEY_2:
+        providers.append(("openrouter2", config.OPENROUTER_API_KEY_2, or_models, or_extra))
 
-    if not config.GROQ_API_KEY and not config.OPENROUTER_API_KEY:
+    if not providers:
         LAST_AI_ERROR = "no keys"
         return None, "AI_NOT_CONFIGURED"
 
-    LAST_AI_ERROR = " | ".join(errors)[:400]
+    for name, key, models, extra in providers:
+        if name.startswith("groq"):
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            text, status, detail = await _chat(url, key, models, prompt, mt, extra=extra)
+        elif name == "cerebras":
+            url = "https://api.cerebras.ai/v1/chat/completions"
+            text, status, detail = await _chat(url, key, models, prompt, mt, extra=extra)
+        elif name == "gemini":
+            text, status, detail = await _gemini_chat(key, models, prompt, mt)
+        else:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            text, status, detail = await _chat(url, key, models, prompt, mt, extra=extra)
+        if text:
+            LAST_AI_ERROR = ""
+            return text, f"{status}+{name}" if status == "ok" else status
+        errors.append(f"{name}:{status}:{detail}")
+
+    LAST_AI_ERROR = " | ".join(errors)[:500]
     log.warning("AI all failed: %s", LAST_AI_ERROR)
     if any("AUTH" in e for e in errors):
         return None, "AI_AUTH_FAILED"
@@ -134,6 +161,64 @@ async def complete(prompt: str, *, max_tokens: int = 3200) -> tuple[str | None, 
     if any("TIMEOUT" in e for e in errors):
         return None, "AI_TIMEOUT"
     return None, "AI_PROVIDER_ERROR"
+
+
+async def _gemini_chat(
+    key: str, models: list[str], prompt: str, max_tokens: int
+) -> tuple[str | None, str, str]:
+    """Gemini via OpenAI-compatible endpoint."""
+    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    last = ""
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            seen = set()
+            for model in models:
+                if not model or model in seen:
+                    continue
+                seen.add(model)
+                try:
+                    resp = await client.post(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {key.strip()}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "temperature": 0.45,
+                            "max_tokens": max_tokens,
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": "You are a Web3 marketing strategist. Be specific and evidence-based.",
+                                },
+                                {"role": "user", "content": prompt[:28000]},
+                            ],
+                        },
+                    )
+                    if resp.status_code == 429:
+                        last = f"{model}:429"
+                        return None, "AI_RATE_LIMITED", last
+                    if resp.status_code in (401, 403):
+                        last = f"{model}:{resp.status_code}"
+                        return None, "AI_AUTH_FAILED", last
+                    if resp.status_code >= 400:
+                        last = f"{model}:{resp.status_code}:{resp.text[:120]}"
+                        continue
+                    data = resp.json()
+                    content = (
+                        ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+                        or ""
+                    ).strip()
+                    if content:
+                        return content, "ok", model
+                    last = f"{model}:empty"
+                except Exception as exc:
+                    last = f"{model}:{exc}"
+                    continue
+    except Exception as exc:
+        return None, "AI_PROVIDER_ERROR", str(exc)[:120]
+    return None, "AI_PROVIDER_ERROR", last
 
 
 async def _chat(
@@ -684,6 +769,8 @@ def _fallback(kind: str, sources: dict[str, Any], status: str) -> str:
 async def run_marketing_audit(sources: dict[str, Any]) -> tuple[str, str]:
     """Deep Marketing Intelligence Audit — primary engine for /market /marketingaudit."""
     prompt = f"""{GATE}
+{HUMAN_VOICE}
+{PARTNERSHIP_RULES}
 
 Produce a full MARKETING INTELLIGENCE AUDIT for this Web3 project.
 
@@ -724,6 +811,8 @@ PROJECT / CATEGORY / MARKET / CURRENT POSITION (label inferences)
 🕳️ GAPS — each: what missing · why · what to do · how · example
 
 💡 OPPORTUNITIES — prioritized practical opportunities
+
+🤝 PARTNERSHIPS & COLLABORATIONS — 3–4 fit-checked ideas (potential partners only unless evidenced)
 
 🎯 STRATEGIC DIRECTION — start / more / less / stop / test
 
@@ -783,23 +872,107 @@ End with top 5 funnel fixes prioritized.
     return text or _fallback("funnels", sources, st), st
 
 
-async def run_suggest_marketing(sources: dict[str, Any]) -> tuple[str, str]:
+SUGGEST_LIBRARY = """
+SELECT only fitting tactics (never dump entire catalogue):
+Awareness, Community, Partnerships, X growth, Acquisition, Product-led, Campaigns,
+Education, Regional/ecosystem, PR/distribution, Creator/KOL, Retention, Discovery, $0/organic.
+"""
+
+PROOF_RULES = """
+For each strong idea include:
+💡 Idea · 🎯 Why it fits THIS project · 🧪 Real Web3 example · 🔗 Proof
+(prefer official X/TG/blog; if only agency/third-party say so; if none: ⚠️ Inference — no documented result)
+📈 What happened (only if documented) · 🧠 Why it may have worked · 🔄 How to adapt · ⚠️ Transferability
+NEVER invent metrics or case studies.
+"""
+
+
+async def run_suggest_marketing(
+    sources: dict[str, Any],
+    *,
+    focus: str = "best",
+    prior: str = "",
+) -> tuple[str, str]:
+    focus_help = {
+        "best": "Top 4 opportunities to test first",
+        "awareness": "Awareness & reach only",
+        "community": "Community growth only",
+        "partnerships": "Partnerships & collabs only",
+        "x": "X growth only",
+        "acquisition": "Acquisition only",
+        "product": "Product-led only",
+        "campaigns": "Campaigns & activations only",
+        "education": "Education & authority only",
+        "regional": "Ecosystem & regional only",
+        "pr": "PR & distribution only",
+        "creators": "Creator/KOL only",
+        "retention": "Retention & advocacy only",
+        "discovery": "Discovery & search only",
+        "zero": "$0 / organic only",
+        "more": "More ideas without repeating prior",
+        "proof": "Deepen proof for PRIOR ideas",
+        "adapt": "Adaptation plans for PRIOR ideas",
+    }.get(focus, "Top opportunities")
     prompt = f"""{GATE}
-Generate PROJECT-SPECIFIC marketing opportunities (not a generic tactic dump).
+{HUMAN_VOICE}
+{PARTNERSHIP_RULES}
+{PROOF_RULES}
+{SUGGEST_LIBRARY}
+
+/suggestmarketing FOCUS={focus} ({focus_help})
 
 EVIDENCE:
 {evidence_brief(sources)}
 
-Only recommend tactics that fit this project type, stage, and evidence.
-For EACH opportunity:
-WHAT · WHY IT FITS · WHO · WHERE · HOW · EXAMPLE · PURPOSE · MEASURE
+{"PRIOR:\n" + prior[:2800] if prior else ""}
 
-Consider when relevant: micro-KOLs, X Spaces, AMAs, quests, UGC, referrals, ambassador,
-educational threads, ecosystem co-marketing, regional communities, product-led loops.
-Do NOT list everything — only what fits.
+Output:
+💡 Suggested Marketing — why these fit now
+Then 3–4 ideas each with full proof block above.
+No generic influencer/post-more advice. No fabricated case studies.
 """
-    text, st = await complete(prompt, max_tokens=3000)
+    text, st = await complete(prompt, max_tokens=3400)
     return text or _fallback("suggestmarketing", sources, st), st
+
+
+async def run_partnerships(
+    sources: dict[str, Any],
+    *,
+    mode: str = "ideas",
+    prior: str = "",
+) -> tuple[str, str]:
+    mode_help = {
+        "ideas": "Best-fit partnership & collaboration ideas",
+        "project": "Project-to-project / protocol partnerships",
+        "ecosystem": "Chain/ecosystem collaborations",
+        "integration": "Product/wallet/DEX/integration opportunities",
+        "creator": "Creator / micro-KOL collaboration angles",
+        "community": "Community-to-community collaborations",
+        "spaces": "X Spaces / AMA / podcast formats",
+        "media": "Media / newsletter / PR angles",
+        "campaign": "Joint campaign / quest / competition ideas",
+        "cross": "Cross-promotion with mutual benefit",
+        "pitch": "3–4 natural outreach pitches to POTENTIAL partners",
+        "plan": "Campaign plan for the top partnership idea",
+        "best": "Only the highest-fit 3 options, ranked",
+    }.get(mode, "Partnership ideas")
+    prompt = f"""{GATE}
+{HUMAN_VOICE}
+{PARTNERSHIP_RULES}
+
+TASK: Partnership & collaboration intelligence.
+MODE: {mode} — {mode_help}
+
+EVIDENCE:
+{evidence_brief(sources)}
+
+{"PRIOR:\n" + prior[:2000] if prior else ""}
+
+Give 3–4 DISTINCT options with WHAT · WHY FIT · WHO · FORMAT · EXECUTION · PURPOSE · MEASURE.
+Never invent existing relationships. Prefer partner types unless a name is in evidence.
+"""
+    text, st = await complete_fast(prompt, max_tokens=1800)
+    return text or _fallback("partnerships", sources, st), st
 
 
 async def run_organic(sources: dict[str, Any]) -> tuple[str, str]:
@@ -1008,3 +1181,170 @@ Final line only: NAMES: name1 | name2 | ...
         "INFERRED candidates are not fully live-verified. Use More / mode buttons."
     )
     return text, st, names
+
+
+# ---------------------------------------------------------------------------
+# Proposal + conversational reply / shuffle engines (fast, human)
+# ---------------------------------------------------------------------------
+
+HUMAN_VOICE = """
+Write like a sharp human who knows Web3 marketing — not corporate AI.
+Ban: "excellent opportunity", "leverage", "in today's landscape", "significantly enhance",
+"I would recommend implementing", "it is important to note", "maximize growth and engagement".
+Prefer natural lines: "One thing I'd test…", "You could turn this into…", "Honestly I'd lean into…"
+Vary sentence length. Be specific to the evidence. No invented metrics.
+Default: give 3–4 DISTINCT options (different angle/structure), not synonym rewrites.
+"""
+
+PARTNERSHIP_RULES = """
+🤝 PARTNERSHIP & COLLABORATION
+Never only say "partner with influencers/projects."
+Evaluate fit: audience overlap · complementary product · ecosystem relevance · mutual benefit · realistic · format.
+Labels: POTENTIAL partner | OBSERVED (only if evidenced) | INFERRED candidate.
+Consider when relevant: protocol/ecosystem, integrations, wallets/DEX, chain collabs, micro-KOLs,
+community-to-community, Spaces/AMAs, podcasts/media, regional, joint quests/campaigns, referrals, launch partners.
+Each idea: WHAT · WHY FIT · WHO (type) · FORMAT · EXECUTION · PURPOSE · MEASURE.
+"""
+
+
+async def complete_fast(prompt: str, *, max_tokens: int = 1400) -> tuple[str | None, str]:
+    """Shorter path for replies/proposals — prioritizes speed."""
+    return await complete(prompt, max_tokens=max_tokens)
+
+
+async def run_marketing_proposals(
+    sources: dict[str, Any],
+    *,
+    style: str = "full",
+    prior_text: str = "",
+) -> tuple[str, str]:
+    style_guide = {
+        "full": "Full marketing proposal someone could send a team.",
+        "short": "Short pitch (8–12 lines max).",
+        "founder_dm": "Natural founder/dev DM — helpful, not salesy unless asked.",
+        "x_dm": "Very short X DM opener (under 280 chars per option, 3 options).",
+        "email": "Professional but human email proposal.",
+        "job": "Job/application pitch — clear value, not desperate.",
+        "partner": "Partnership-style proposal.",
+        "30day": "Concrete 30-day execution plan.",
+        "quick": "Ultra-short proposal (what I noticed + what I'd do + first step).",
+    }.get(style, "Full proposal")
+
+    prompt = f"""{GATE}
+{HUMAN_VOICE}
+
+TASK: Marketing PROPOSAL for this project.
+STYLE: {style} — {style_guide}
+
+EVIDENCE:
+{evidence_brief(sources)}
+
+{"PRIOR OUTPUT TO REFINE:\n" + prior_text[:2500] if prior_text else ""}
+
+Structure for full/short/30day (adapt for DM/email/job):
+What I noticed (diagnosis, short)
+What I'd propose (approach)
+What I'd work on (only relevant areas)
+How I'd execute (concrete)
+Expected purpose
+30-day approach (if style needs it)
+Why this fits
+
+For DM/X styles: output 3–4 option variants labeled Option 1/2/3 with different tones.
+Never invent relationships or results.
+"""
+    text, st = await complete_fast(prompt, max_tokens=2200)
+    return text or _fallback("proposals", sources, st), st
+
+
+async def run_reply_assistant(
+    sources: dict[str, Any] | None,
+    user_request: str,
+    *,
+    mode: str = "auto",
+    tone: str = "",
+    perspective: str = "",
+    prior_options: list[str] | None = None,
+) -> tuple[str, str]:
+    """Conversational marketing reply / idea generator."""
+    evidence = evidence_brief(sources) if sources else "(no project research in session — answer from user text only)"
+    prior = prior_options or []
+    prompt = f"""{GATE}
+{HUMAN_VOICE}
+
+You are a conversational marketing assistant for Web3.
+
+USER REQUEST:
+{user_request}
+
+MODE HINT: {mode}
+TONE: {tone or "natural"}
+PERSPECTIVE: {perspective or "default"}
+
+PROJECT EVIDENCE (may be empty):
+{evidence}
+
+ALREADY USED OPTIONS (do not repeat wording or same angle):
+{prior[:8] if prior else "(none)"}
+
+Rules:
+- If user wants a quick idea for a DM/dev chat → 3–4 short, precise options.
+- If user pastes someone else's message → suggest replies that respond to WHAT THEY SAID.
+- Distinguish: (A) useful contribution (B) team suggestion (C) service pitch — only do C if asked.
+- Do NOT sound like you're job-hunting unless user asks to pitch services.
+- Keep each option tight. Label Option 1 / 2 / 3 (and 4 if useful).
+- Different structure per option (direct / conversational / strategic or other).
+"""
+    text, st = await complete_fast(prompt, max_tokens=1600)
+    if not text:
+        return (
+            f"⚠️ AI unavailable ({st}). Try again in a minute.\nDetail: {LAST_AI_ERROR[:200]}",
+            st,
+        )
+    return text, st
+
+
+async def run_shuffle(
+    original: str,
+    *,
+    instruction: str = "genuinely different human variations",
+    sources: dict[str, Any] | None = None,
+    prior: list[str] | None = None,
+) -> tuple[str, str]:
+    prompt = f"""{HUMAN_VOICE}
+
+Shuffle the text below into 3–4 GENUINELY different human variations.
+Same intelligence and facts. Different voice, structure, approach.
+NOT synonym swaps. NOT corporate AI tone.
+
+INSTRUCTION: {instruction}
+
+ORIGINAL:
+{original[:3500]}
+
+PROJECT CONTEXT (optional):
+{evidence_brief(sources) if sources else "(none)"}
+
+AVOID repeating these prior variations:
+{prior or "(none)"}
+
+Output:
+Option 1 — [label]
+...
+Option 2 — [label]
+...
+Option 3 — [label]
+"""
+    text, st = await complete_fast(prompt, max_tokens=1500)
+    return text or f"⚠️ Shuffle failed ({st}). Wait and retry.", st
+
+
+def extract_options(text: str) -> list[str]:
+    """Pull Option N blocks for variation memory."""
+    parts = re.split(r"(?i)(?:^|\n)\s*option\s*\d+", text or "")
+    out = []
+    for p in parts[1:]:
+        p = p.strip(" -—:\n")
+        if p:
+            out.append(p[:500])
+    return out[:12]
