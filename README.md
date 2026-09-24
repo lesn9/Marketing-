@@ -1,46 +1,38 @@
-# 📣 Web3 Marketing + Competition Intelligence
+# Web3 Marketing + Competition Intelligence
 
-Compact Telegram bot (6 Python files). Strategy-first: Observation → Diagnosis → Recommendation → Execution.
-
-## Files
+Exactly **4 Python files** + requirements + README.
 
 ```
-main.py           # Telegram handlers
-config.py         # Env settings
-sources.py        # Input parse + website/X/TG collection
-engines.py        # AI + marketing/competition engines
-db.py             # Watchlist + competition sessions
+main.py            Telegram handlers, buttons, commands
+config.py          Env vars
+intelligence.py    Sources + AI + all strategy engines
+database.py        SQLite (watchlist, competitor sessions)
 requirements.txt
 README.md
 ```
 
-## Railway env vars
+## Railway env
 
-| Variable | Required | What it does |
-|----------|----------|----------------|
-| `TELEGRAM_BOT_TOKEN` | **Yes** | From @BotFather (new bot) |
-| `GROQ_API_KEY` | Strongly yes | Primary AI |
-| `OPENROUTER_API_KEY` | Recommended | Fallback AI |
-| `ALLOWED_USER_IDS` | Optional | Your Telegram numeric user id — locks bot to you only. Without it, anyone who finds the bot can use it. |
-| `DATABASE_PATH` | Optional | Where SQLite file is stored. Default `./marketing.db`. On Railway ephemeral disk is fine for watchlist/sessions; use a volume path if you need persistence across redeploys. You don't "get" it from anywhere — you choose the path or leave default. |
-| `X_BEARER_TOKEN` | Optional | Not required. Without it, send `@username` and the bot uses AI + best-effort public page. |
+| Variable | Required | Notes |
+|----------|----------|-------|
+| TELEGRAM_BOT_TOKEN | Yes | New bot from BotFather |
+| GROQ_API_KEY | Strongly yes | Primary AI |
+| OPENROUTER_API_KEY | Recommended | Fallback |
+| ALLOWED_USER_IDS | Optional | Your Telegram numeric id (from @userinfobot). Locks bot to you. |
+| DATABASE_PATH | Optional | Default `./marketing.db` — local SQLite file path, not something you download |
+| GROQ_MODEL | Optional | Default llama-3.3-70b-versatile; if errors try llama-3.1-8b-instant |
+| OPENROUTER_MODEL | Optional | Free model fallback |
 
-### What is ALLOWED_USER_IDS?
-Your Telegram user id (number). Get it from @userinfobot. If set, only those ids can use the bot. If empty, bot is open.
-
-### What is DATABASE_PATH?
-File path for SQLite (watchlist + "more competitors" session memory). Default `./marketing.db` is fine. Not a cloud service — just a local file path.
-
-## Start command
-```
-python main.py
-```
+Start: `python main.py`
 
 ## Commands
-/market /competition /competitor /positioning /campaigns /marketgaps /opportunities /compare /report /watch /settings
 
-### Competition
-- Web3/crypto competitors only
-- Structured profiles with Website / X / Telegram when known
-- 🔄 More competitors (deduped session)
-- Mode buttons: Similar products, Architecture, Social/Marketing/UX/Community/Growth leaders
+/market /marketingaudit /positioning /competition /competitor /campaigns
+/marketingfunnels /funnels /suggestmarketing /organicmarketing /zeromarketing
+/marketgaps /opportunities /compare /report /fullpack
+/watch /watchlist /unwatch /settings /help
+
+## AI errors with keys set
+
+Bot tries multiple models on Groq then OpenRouter.
+If you still see AI_PROVIDER_ERROR: check Railway logs, rate limits, and try GROQ_MODEL=llama-3.1-8b-instant.
