@@ -1,46 +1,30 @@
+"""Settings — all env vars in one place."""
+from __future__ import annotations
 import os
-import logging
-from dataclasses import dataclass
-from typing import Optional
-
-logger = logging.getLogger(__name__)
+from urllib.parse import unquote
 
 
-@dataclass
-class Settings:
-    bot_token: str
-    groq_api_key: Optional[str] = None
-    openrouter_api_key: Optional[str] = None
-    x_bearer_token: Optional[str] = None
-    etherscan_api_key: Optional[str] = None
-    solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+def env(*names: str, default: str = "") -> str:
+    for n in names:
+        v = os.getenv(n)
+        if not v:
+            continue
+        v = unquote(v.strip().strip('"').strip("'"))
+        if v:
+            return v
+    return default
 
 
-def load_settings() -> Settings:
-    """Load settings from environment. Fails clearly if BOT_TOKEN is missing."""
-    token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
-
-    if not token:
-        logger.error("BOT_TOKEN is missing. Add it in Railway → Variables.")
-        raise RuntimeError(
-            "BOT_TOKEN is required. "
-            "Go to Railway → your service → Variables and add BOT_TOKEN."
-        )
-
-    settings = Settings(
-        bot_token=token.strip(),
-        groq_api_key=(os.getenv("GROQ_API_KEY") or "").strip() or None,
-        openrouter_api_key=(os.getenv("OPENROUTER_API_KEY") or "").strip() or None,
-        x_bearer_token=(os.getenv("X_BEARER_TOKEN") or "").strip() or None,
-        etherscan_api_key=(os.getenv("ETHERSCAN_API_KEY") or "").strip() or None,
-        solana_rpc_url=(os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com").strip(),
-    )
-
-    # Log presence (never log the actual keys)
-    logger.info("Environment check:")
-    logger.info(f"  BOT_TOKEN          : {'✅ set' if settings.bot_token else '❌ missing'}")
-    logger.info(f"  GROQ_API_KEY       : {'✅ set' if settings.groq_api_key else '⚠️  not set'}")
-    logger.info(f"  OPENROUTER_API_KEY : {'✅ set' if settings.openrouter_api_key else '⚠️  not set'}")
-    logger.info(f"  X_BEARER_TOKEN     : {'✅ set' if settings.x_bearer_token else '⚠️  not set'}")
-
-    return settings
+TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN")
+ALLOWED_USER_IDS = [
+    int(x) for x in env("ALLOWED_USER_IDS").replace(" ", "").split(",") if x.isdigit()
+]
+GROQ_API_KEY = env("GROQ_API_KEY")
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", "OPENROUTER_KEY")
+GROQ_MODEL = env("GROQ_MODEL", default="llama-3.3-70b-versatile")
+OPENROUTER_MODEL = env("OPENROUTER_MODEL", default="meta-llama/llama-3.3-70b-instruct:free")
+# Optional — bot works without it; X analysis falls back to AI + public HTML best-effort
+X_BEARER_TOKEN = env("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN")
+DATABASE_PATH = env("DATABASE_PATH", default="./marketing.db")
+LOG_LEVEL = env("LOG_LEVEL", default="INFO")
+BUILD = "2026-09-24-mkt-competition-v2-compact"
