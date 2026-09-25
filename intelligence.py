@@ -67,13 +67,7 @@ Label AI-memory-only picks: ⚠️ INFERRED CANDIDATE
 
 
 LAST_AI_ERROR: str = ""
-
-# Skip known-dead Groq model ids immediately
-_DEAD_MODELS = {
-    "llama-3.1-70b-versatile",
-    "llama-3.1-70b",
-    "mixtral-8x7b-32768",
-}
+AI_ATTEMPTS: list[str] = []  # internal diagnostics for /settings
 
 
 def _any_ai_key() -> bool:
@@ -87,269 +81,213 @@ def _any_ai_key() -> bool:
     )
 
 
+def _classify_http(status_code: int) -> str:
+    if status_code in (401, 403):
+        return "AI_AUTH_FAILED"
+    if status_code == 429:
+        return "AI_RATE_LIMITED"
+    if status_code == 404:
+        return "AI_MODEL_ERROR"
+    if status_code >= 500:
+        return "AI_PROVIDER_ERROR"
+    if status_code >= 400:
+        return "AI_MODEL_ERROR"
+    return "AI_PROVIDER_ERROR"
+
+
 async def complete(prompt: str, *, max_tokens: int = 2200) -> tuple[str | None, str]:
-    """Fast multi-provider AI. Few live models, short timeout, skip dead ids."""
-    global LAST_AI_ERROR
+    """One configured model per provider. Fail → next provider. No stale hardcoded models."""
+    global LAST_AI_ERROR, AI_ATTEMPTS
+    AI_ATTEMPTS = []
     errors: list[str] = []
     mt = min(max_tokens, 2000)
     prompt = (prompt or "")[:22000]
-
-    # Current live models only (as of 2026) — max 2 tries per provider
-    groq_models = []
-    for m in [config.GROQ_MODEL, "llama-3.1-8b-instant", "llama-3.3-70b-versatile", "gemma2-9b-it"]:
-        if m and m not in _DEAD_MODELS and m not in groq_models:
-            groq_models.append(m)
-    groq_models = groq_models[:2]
-
-    cerebras_models = []
-    for m in [config.CEREBRAS_MODEL, "llama3.1-8b", "llama-3.3-70b"]:
-        if m and m not in cerebras_models:
-            cerebras_models.append(m)
-    cerebras_models = cerebras_models[:2]
-
-    gemini_models = []
-    for m in [config.GEMINI_MODEL, "gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]:
-        if m and m not in gemini_models:
-            gemini_models.append(m)
-    gemini_models = gemini_models[:2]
-
-    or_models = []
-    for m in [
-        config.OPENROUTER_MODEL,
-        "openrouter/auto",
-        "google/gemma-2-9b-it:free",
-        "meta-llama/llama-3.2-3b-instruct:free",
-        "qwen/qwen-2.5-7b-instruct:free",
-    ]:
-        if m and m not in or_models:
-            or_models.append(m)
-    or_models = or_models[:2]
 
     or_extra = {
         "HTTP-Referer": "https://github.com/web3-marketing-intel",
         "X-Title": "Web3 Marketing Intelligence",
     }
 
-    # Prefer fast providers first
-    chain: list[tuple[str, object]] = []
-    if config.GROQ_API_KEY:
-        chain.append(("groq", (config.GROQ_API_KEY, groq_models)))
+    # (name, kind, key, model, extra)
+    chain: list[tuple[str, str, str, str, dict | None]] = []
+    if config.GROQ_API_KEY and config.GROQ_MODEL:
+        chain.append(("groq", "openai", config.GROQ_API_KEY, config.GROQ_MODEL, None))
     if config.GROQ_API_KEY_2:
-        chain.append(("groq2", (config.GROQ_API_KEY_2, groq_models)))
-    if config.GEMINI_API_KEY:
-        chain.append(("gemini", (config.GEMINI_API_KEY, gemini_models)))
-    if config.CEREBRAS_API_KEY:
-        chain.append(("cerebras", (config.CEREBRAS_API_KEY, cerebras_models)))
-    if config.OPENROUTER_API_KEY:
-        chain.append(("openrouter", (config.OPENROUTER_API_KEY, or_models)))
-    if config.OPENROUTER_API_KEY_2:
-        chain.append(("openrouter2", (config.OPENROUTER_API_KEY_2, or_models)))
+        m2 = config.GROQ_MODEL_2 or config.GROQ_MODEL
+        if m2:
+            chain.append(("groq2", "openai", config.GROQ_API_KEY_2, m2, None))
+    if config.GEMINI_API_KEY and config.GEMINI_MODEL:
+        chain.append(("gemini", "gemini", config.GEMINI_API_KEY, config.GEMINI_MODEL, None))
+    if config.CEREBRAS_API_KEY and config.CEREBRAS_MODEL:
+        chain.append(("cerebras", "openai", config.CEREBRAS_API_KEY, config.CEREBRAS_MODEL, None))
+    if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL:
+        chain.append(("openrouter", "openai", config.OPENROUTER_API_KEY, config.OPENROUTER_MODEL, or_extra))
+    if config.OPENROUTER_API_KEY_2 and config.OPENROUTER_MODEL:
+        chain.append(("openrouter2", "openai", config.OPENROUTER_API_KEY_2, config.OPENROUTER_MODEL, or_extra))
 
     if not chain:
-        LAST_AI_ERROR = "no keys"
+        LAST_AI_ERROR = "no keys or models configured"
         return None, "AI_NOT_CONFIGURED"
 
-    for name, payload in chain:
-        key, models = payload  # type: ignore
-        if name.startswith("groq"):
-            text, status, detail = await _chat(
+    for name, kind, key, model, extra in chain:
+        if kind == "gemini":
+            text, status, detail = await _gemini_one(key, model, prompt, mt)
+        elif name.startswith("groq"):
+            text, status, detail = await _openai_one(
                 "https://api.groq.com/openai/v1/chat/completions",
-                key, models, prompt, mt,
+                key, model, prompt, mt, extra=extra,
             )
-        elif name == "cerebras":
-            text, status, detail = await _chat(
+        elif name.startswith("cerebras"):
+            text, status, detail = await _openai_one(
                 "https://api.cerebras.ai/v1/chat/completions",
-                key, models, prompt, mt,
+                key, model, prompt, mt, extra=extra,
             )
-        elif name == "gemini":
-            text, status, detail = await _gemini_chat(key, models, prompt, mt)
         else:
-            text, status, detail = await _chat(
+            text, status, detail = await _openai_one(
                 "https://openrouter.ai/api/v1/chat/completions",
-                key, models, prompt, mt, extra=or_extra,
+                key, model, prompt, mt, extra=extra,
             )
+        AI_ATTEMPTS.append(f"{name}|{model}|{status}|{detail[:80]}")
+        log.info("AI attempt %s model=%s status=%s detail=%s", name, model, status, detail[:120])
         if text:
             LAST_AI_ERROR = ""
             return text, f"ok:{name}"
         errors.append(f"{name}:{status}:{detail}")
 
-    LAST_AI_ERROR = " | ".join(errors)[:500]
+    LAST_AI_ERROR = " | ".join(errors)[:600]
     log.warning("AI all failed: %s", LAST_AI_ERROR)
-    if any("AUTH" in e for e in errors):
+    # Prefer most specific overall status
+    joined = " ".join(errors)
+    if "AI_AUTH_FAILED" in joined:
         return None, "AI_AUTH_FAILED"
-    if any("RATE" in e or "429" in e for e in errors):
+    if "AI_RATE_LIMITED" in joined or "429" in joined:
         return None, "AI_RATE_LIMITED"
-    if any("TIMEOUT" in e for e in errors):
+    if "AI_TIMEOUT" in joined:
         return None, "AI_TIMEOUT"
+    if "AI_MODEL_ERROR" in joined:
+        return None, "AI_MODEL_ERROR"
     return None, "AI_PROVIDER_ERROR"
 
 
-async def _gemini_chat(
-    key: str, models: list[str], prompt: str, max_tokens: int
+async def _gemini_one(
+    key: str, model: str, prompt: str, max_tokens: int
 ) -> tuple[str | None, str, str]:
-    """Gemini native generateContent (more reliable than OpenAI-compat)."""
-    last = ""
+    """Single Gemini model via native generateContent."""
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={key.strip()}"
+    )
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            for model in models[:2]:
-                if not model:
-                    continue
-                url = (
-                    f"https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model}:generateContent?key={key.strip()}"
-                )
-                try:
-                    resp = await client.post(
-                        url,
-                        headers={"Content-Type": "application/json"},
-                        json={
-                            "contents": [
-                                {
-                                    "role": "user",
-                                    "parts": [
-                                        {
-                                            "text": (
-                                                "You are a Web3 marketing strategist. "
-                                                "Be specific and evidence-based.\n\n" + prompt
-                                            )[:30000]
-                                        }
-                                    ],
-                                }
-                            ],
-                            "generationConfig": {
-                                "temperature": 0.45,
-                                "maxOutputTokens": max_tokens,
-                            },
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                resp = await client.post(
+                    url,
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "contents": [{
+                            "role": "user",
+                            "parts": [{
+                                "text": (
+                                    "You are a Web3 marketing strategist. "
+                                    "Be specific and evidence-based.\\n\\n" + prompt
+                                )[:30000]
+                            }],
+                        }],
+                        "generationConfig": {
+                            "temperature": 0.45,
+                            "maxOutputTokens": max_tokens,
                         },
-                    )
-                except httpx.TimeoutException:
-                    return None, "AI_TIMEOUT", f"{model}:timeout"
-                except Exception as exc:
-                    last = f"{model}:{exc}"
-                    continue
-                if resp.status_code == 429:
-                    return None, "AI_RATE_LIMITED", f"{model}:429"
-                if resp.status_code in (401, 403):
-                    return None, "AI_AUTH_FAILED", f"{model}:{resp.status_code}"
-                if resp.status_code >= 400:
-                    last = f"{model}:{resp.status_code}:{(resp.text or '')[:100]}"
-                    continue
-                data = resp.json() if resp.content else {}
-                try:
-                    parts = (
-                        ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
-                        or []
-                    )
-                    content = "".join(
-                        (p.get("text") or "") for p in parts if isinstance(p, dict)
-                    ).strip()
-                except Exception as exc:
-                    last = f"{model}:parse:{exc}"
-                    continue
-                if content:
-                    return content, "ok", model
-                last = f"{model}:empty"
+                    },
+                )
+            except httpx.TimeoutException:
+                return None, "AI_TIMEOUT", f"{model}:timeout"
+            except Exception as exc:
+                return None, "AI_PROVIDER_ERROR", f"{model}:{exc}"
+
+            if resp.status_code >= 400:
+                kind = _classify_http(resp.status_code)
+                return None, kind, f"{model}:{resp.status_code}:{(resp.text or '')[:160]}"
+
+            data = resp.json() if resp.content else {}
+            try:
+                parts = (
+                    ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
+                    or []
+                )
+                content = "".join(
+                    (p.get("text") or "") for p in parts if isinstance(p, dict)
+                ).strip()
+            except Exception as exc:
+                return None, "AI_PROVIDER_ERROR", f"{model}:parse:{exc}"
+            if content:
+                return content, "ok", model
+            return None, "AI_PROVIDER_ERROR", f"{model}:empty"
     except Exception as exc:
-        return None, "AI_PROVIDER_ERROR", str(exc)[:120]
-    return None, "AI_PROVIDER_ERROR", last
+        return None, "AI_PROVIDER_ERROR", str(exc)[:160]
 
 
-async def _chat(
+async def _openai_one(
     url: str,
     key: str,
-    models: list[str],
+    model: str,
     prompt: str,
     max_tokens: int,
     extra: dict | None = None,
 ) -> tuple[str | None, str, str]:
+    """Single OpenAI-compatible chat completion (Groq / Cerebras / OpenRouter)."""
     headers = {
         "Authorization": f"Bearer {key.strip()}",
         "Content-Type": "application/json",
     }
     if extra:
         headers.update(extra)
-    last_detail = ""
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            seen: set[str] = set()
-            for model in models[:2]:
-                if not model or model in seen or model in _DEAD_MODELS:
-                    continue
-                seen.add(model)
-                try:
-                    resp = await client.post(
-                        url,
-                        headers=headers,
-                        json={
-                            "model": model,
-                            "temperature": 0.45,
-                            "max_tokens": max_tokens,
-                            "messages": [
-                                {"role": "system", "content": SYSTEM},
-                                {"role": "user", "content": prompt[:22000]},
-                            ],
-                        },
-                    )
-                except httpx.TimeoutException:
-                    last_detail = f"{model}:timeout"
-                    continue
-                except Exception as exc:
-                    last_detail = f"{model}:{exc}"
-                    continue
-                if resp.status_code == 401:
-                    return None, "AI_AUTH_FAILED", "401"
-                if resp.status_code == 429:
-                    last_detail = f"{model}:429"
-                    continue
-                if resp.status_code >= 400:
-                    last_detail = f"{resp.status_code}:{(resp.text or '')[:100]}"
-                    log.warning("AI model %s failed: %s", model, last_detail)
-                    continue
-                try:
-                    data = resp.json() if resp.content else {}
-                except Exception:
-                    last_detail = f"{model}:bad_json"
-                    continue
-                choices = data.get("choices") if isinstance(data, dict) else None
-                if not choices:
-                    last_detail = f"{model}:no_choices"
-                    continue
-                msg = (choices[0] or {}).get("message") or {}
-                text = (msg.get("content") or "").strip()
-                if isinstance(text, list):
-                    # Some providers return content parts
-                    text = "".join(
-                        (p.get("text") if isinstance(p, dict) else str(p)) for p in text
-                    ).strip()
-                if text:
-                    return text, "AI_SUCCESS", model
-                last_detail = f"{model}:empty"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                resp = await client.post(
+                    url,
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "temperature": 0.45,
+                        "max_tokens": max_tokens,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM},
+                            {"role": "user", "content": prompt[:22000]},
+                        ],
+                    },
+                )
+            except httpx.TimeoutException:
+                return None, "AI_TIMEOUT", f"{model}:timeout"
+            except Exception as exc:
+                return None, "AI_PROVIDER_ERROR", f"{model}:{exc}"
+
+            if resp.status_code >= 400:
+                kind = _classify_http(resp.status_code)
+                return None, kind, f"{model}:{resp.status_code}:{(resp.text or '')[:160]}"
+
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                return None, "AI_PROVIDER_ERROR", f"{model}:bad_json"
+
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not choices:
+                return None, "AI_PROVIDER_ERROR", f"{model}:no_choices"
+
+            msg = (choices[0] or {}).get("message") or {}
+            text = msg.get("content") or ""
+            if isinstance(text, list):
+                text = "".join(
+                    (p.get("text") if isinstance(p, dict) else str(p)) for p in text
+                )
+            text = str(text).strip()
+            if text:
+                return text, "ok", model
+            return None, "AI_PROVIDER_ERROR", f"{model}:empty"
     except Exception as exc:
-        return None, "AI_PROVIDER_ERROR", str(exc)[:120]
-    return None, "AI_MODEL_ERROR", last_detail
+        return None, "AI_PROVIDER_ERROR", str(exc)[:160]
 
-
-# ---------------------------------------------------------------------------
-# Input parsing + sources
-# ---------------------------------------------------------------------------
-
-PROJECT_TYPES = {
-    "meme", "utility", "defi", "infrastructure", "gaming", "ai", "consumer",
-    "social", "depin", "rwa", "trading", "prediction", "nft", "launchpad",
-    "protocol", "ecosystem", "dex", "wallet", "other",
-}
-
-
-@dataclass
-class ParsedInput:
-    raw: str
-    x_handles: list[str] = field(default_factory=list)
-    websites: list[str] = field(default_factory=list)
-    telegrams: list[str] = field(default_factory=list)
-    contracts: list[str] = field(default_factory=list)
-    project_type: str | None = None
-    extra_context: str = ""
-    competitor_focus: str | None = None  # for /competitor last token(s)
 
 
 def parse_user_input(args: list[str], *, competitor_mode: bool = False) -> ParsedInput:

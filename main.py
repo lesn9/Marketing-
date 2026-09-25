@@ -321,18 +321,25 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await gate(update, context):
         return
     owners = context.application.bot_data.get("owners") or config.ALLOWED_USER_IDS or []
+    attempts = getattr(intel, "AI_ATTEMPTS", None) or []
+    att_line = " · ".join(attempts[-6:]) if attempts else "none yet"
     await update.effective_message.reply_html(
         "⚙️ <b>Settings</b>\n"
         f"Build: <code>{esc(config.BUILD)}</code>\n"
-        f"Groq: {'set' if config.GROQ_API_KEY else '—'} · Groq2: {'set' if config.GROQ_API_KEY_2 else '—'}\n"
-        f"OpenRouter: {'set' if config.OPENROUTER_API_KEY else '—'} · OR2: {'set' if config.OPENROUTER_API_KEY_2 else '—'}\n"
-        f"Gemini: {'set' if config.GEMINI_API_KEY else '—'} · Cerebras: {'set' if config.CEREBRAS_API_KEY else '—'}\n"
-        f"Models: g=<code>{esc(config.GROQ_MODEL)}</code> or=<code>{esc(config.OPENROUTER_MODEL)}</code>\n"
+        f"Groq: {'set' if config.GROQ_API_KEY else '—'} model=<code>{esc(config.GROQ_MODEL)}</code>\n"
+        f"Groq2: {'set' if config.GROQ_API_KEY_2 else '—'} "
+        f"model=<code>{esc(config.GROQ_MODEL_2 or config.GROQ_MODEL)}</code>\n"
+        f"Gemini: {'set' if config.GEMINI_API_KEY else '—'} model=<code>{esc(config.GEMINI_MODEL)}</code>\n"
+        f"Cerebras: {'set' if config.CEREBRAS_API_KEY else '—'} model=<code>{esc(config.CEREBRAS_MODEL)}</code>\n"
+        f"OpenRouter: {'set' if config.OPENROUTER_API_KEY else '—'} "
+        f"OR2: {'set' if config.OPENROUTER_API_KEY_2 else '—'}\n"
+        f"OR model: <code>{esc(config.OPENROUTER_MODEL)}</code>\n"
         f"Access: locked to {owners or 'will lock on first /start'}\n"
         f"DB: <code>{esc(config.DATABASE_PATH)}</code>\n"
-        f"Last AI error: <code>{esc(getattr(intel, 'LAST_AI_ERROR', '') or 'none')}</code>\n\n"
-        "Order: Groq → Groq2 → Cerebras → Gemini → OpenRouter → OR2\n"
-        "Use underscores: <code>GROQ_API_KEY_2</code> (not spaces)."
+        f"Last AI error: <code>{esc(getattr(intel, 'LAST_AI_ERROR', '') or 'none')}</code>\n"
+        f"Last attempts: <code>{esc(att_line)}</code>\n\n"
+        "Router: Groq → Groq2 → Gemini → Cerebras → OpenRouter → OR2\n"
+        "Each provider uses <b>only</b> its Railway-configured model (no hidden fallbacks)."
     )
 
 
