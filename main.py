@@ -79,8 +79,17 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE | None = None)
         return False
     app = context.application if context else None
     if not allowed(u.id, app):
+        log.warning(
+            "Access denied uid=%s owners=%s env=%s",
+            u.id,
+            app.bot_data.get("owners") if app else None,
+            config.ALLOWED_USER_IDS,
+        )
         if update.effective_message:
-            await update.effective_message.reply_text("Private bot — access denied.")
+            await update.effective_message.reply_text(
+                f"Private bot — access denied (your id={u.id}).\n"
+                "Set Railway ALLOWED_USER_IDS to your Telegram id, or CLAIM_OWNER=1 then /start."
+            )
         return False
     return True
 
@@ -288,28 +297,51 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not u:
         return
     db: DB = context.application.bot_data["db"]
-    # Auto-lock: first person to /start becomes sole owner (unless ALLOWED_USER_IDS set)
-    if not config.ALLOWED_USER_IDS:
-        owners = context.application.bot_data.get("owners") or []
-        if not owners:
+    try:
+        # Env allowlist wins
+        if config.ALLOWED_USER_IDS:
+            if u.id not in config.ALLOWED_USER_IDS:
+                await update.effective_message.reply_text(
+                    f"Private bot — your id {u.id} is not in ALLOWED_USER_IDS."
+                )
+                return
+            context.application.bot_data["owners"] = list(config.ALLOWED_USER_IDS)
+        else:
+            # Auto-lock: claim ownership on /start if unlocked or same owner
             raw = await db.get_meta("owner_id")
-            if raw and raw.isdigit():
+            owners = context.application.bot_data.get("owners") or []
+            if raw and raw.isdigit() and not owners:
                 owners = [int(raw)]
-            else:
+            if not owners:
                 owners = [u.id]
                 await db.set_meta("owner_id", str(u.id))
                 log.info("Locked bot to owner_id=%s", u.id)
+            elif u.id not in owners:
+                # Allow reclaim if only one owner slot and user sets CLAIM_OWNER=1
+                claim = (config.env("CLAIM_OWNER") if hasattr(config, "env") else "") or __import__("os").getenv("CLAIM_OWNER", "")
+                if str(claim).strip() in ("1", "true", "yes"):
+                    owners = [u.id]
+                    await db.set_meta("owner_id", str(u.id))
+                    log.info("Owner reclaimed by uid=%s", u.id)
+                else:
+                    await update.effective_message.reply_text(
+                        f"Private bot — locked to {owners}. Your id={u.id}.\n"
+                        "Set ALLOWED_USER_IDS={your_id} or CLAIM_OWNER=1 on Railway to reclaim."
+                    )
+                    return
             context.application.bot_data["owners"] = owners
-        if u.id not in owners:
-            await update.effective_message.reply_text("Private bot — access denied.")
-            return
-    elif not allowed(u.id, context.application):
-        await update.effective_message.reply_text("Private bot — access denied.")
-        return
-    await update.effective_message.reply_html(
-        "📣 <b>Online.</b>\n"
-        f"Access locked to your account (<code>{u.id}</code>).\n\n" + HELP
-    )
+
+        await update.effective_message.reply_html(
+            "📣 <b>Online.</b>\n"
+            f"Your id: <code>{u.id}</code>\n"
+            f"Access: {context.application.bot_data.get('owners')}\n\n" + HELP
+        )
+    except Exception as exc:
+        log.exception("cmd_start failed")
+        try:
+            await update.effective_message.reply_text(f"Start error: {exc}")
+        except Exception:
+            pass
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -352,11 +384,17 @@ async def _args(update, context, usage: str):
 
 def _handler(name: str, usage: str):
     async def h(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not await gate(update, context):
-            return
-        args = await _args(update, context, usage)
-        if args:
-            await run_engine(update, context, args, name)
+        try:
+            log.info("cmd /%s from %s args=%s", name, update.effective_user and update.effective_user.id, context.args)
+            if not await gate(update, context):
+                return
+            args = await _args(update, context, usage)
+            if args:
+                await run_engine(update, context, args, name)
+        except Exception as exc:
+            log.exception("handler /%s failed", name)
+            if update.effective_message:
+                await update.effective_message.reply_text(f"Error in /{name}: {exc}")
     return h
 
 
@@ -943,6 +981,18 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_competition, pattern=r"^cm:"))
     app.add_handler(CallbackQueryHandler(cb_variations, pattern=r"^var:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        log.exception("Unhandled error: %s", context.error)
+        try:
+            if isinstance(update, Update) and update.effective_message:
+                await update.effective_message.reply_text(
+                    f"Internal error: {context.error}"
+                )
+        except Exception:
+            pass
+
+    app.add_error_handler(on_error)
 
     log.info("Polling %s", config.BUILD)
     app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True)
