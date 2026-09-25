@@ -1162,17 +1162,17 @@ what works and WHY, what subject can adapt at its stage, what NOT to copy,
 
 
 MODES = {
-    "similar": "Most relevant comparable Web3 projects.",
-    "product": "Similar products / problem solved.",
-    "architecture": "Similar architecture/mechanism.",
-    "social": "Stronger X/social execution (relevant category).",
-    "marketing": "Stronger marketing execution.",
-    "positioning": "Clearer positioning examples.",
-    "ux": "Stronger website/product UX.",
-    "community": "Stronger community/support.",
-    "growth": "Notable growth/campaign strategies.",
-    "product_leaders": "Stronger product experience/value delivery.",
-    "samestage": "Emerging / same-stage growth comparables (prioritize).",
+    "similar": "Most relevant comparable Web3 projects by product + audience.",
+    "product": "Similar product / problem solved — different projects than other modes.",
+    "architecture": "Similar architecture/mechanism — not the same list as product mode.",
+    "social": "Projects that execute better on X/social in a related niche — NEW names.",
+    "marketing": "Projects with stronger marketing execution — NEW names, not social duplicates.",
+    "positioning": "Clearer positioning examples — NEW names.",
+    "ux": "Stronger website/product UX — NEW names.",
+    "community": "Stronger community systems — NEW names, not growth/social duplicates.",
+    "growth": "Notable growth tactics — NEW names, not community/social duplicates.",
+    "product_leaders": "Stronger product experience — NEW names.",
+    "samestage": "Same-stage comparables only — avoid giants unless truly same stage.",
 }
 
 
@@ -1196,7 +1196,7 @@ SUBJECT:
 ALREADY SHOWN (do not repeat names/aliases/URLs):
 {exclude if exclude else "(none)"}
 
-Return up to {batch_size} NEW candidates only if genuinely comparable.
+Return up to {batch_size} NEW candidates only if genuinely comparable.\nCRITICAL: mode={mode} means pick projects that excel on THAT dimension.\nDo NOT reuse the same projects across modes. Different mode → different projects.\nIf mode is community → projects known for community. social → strong X. growth → growth tactics.\nproduct → similar product. architecture → similar mechanism. samestage → similar stage.\n
 Zero is valid if none pass the relevance test.
 Do NOT invent bird-themed tokens or keyword matches.
 Do NOT include subject project itself.
@@ -1300,42 +1300,60 @@ async def run_marketing_proposals(
     style: str = "full",
     prior_text: str = "",
 ) -> tuple[str, str]:
-    style_guide = {
-        "full": "Full marketing proposal someone could send a team.",
-        "short": "Short pitch (8–12 lines max).",
-        "founder_dm": "Natural founder/dev DM — helpful, not salesy unless asked.",
-        "x_dm": "Very short X DM opener (under 280 chars per option, 3 options).",
-        "email": "Professional but human email proposal.",
-        "job": "Job/application pitch — clear value, not desperate.",
-        "partner": "Partnership-style proposal.",
-        "30day": "Concrete 30-day execution plan.",
-        "quick": "Ultra-short proposal (what I noticed + what I'd do + first step).",
-    }.get(style, "Full proposal")
+    """Human proposals — never agency templates, tables, or fake org charts."""
+    style = (style or "full").lower()
+    style_rules = {
+        "full": (
+            "One coherent proposal a marketer would paste into a doc for a team. "
+            "Max ~350 words. Sections only if needed: What I noticed / What I'd do / First 2 weeks. "
+            "NO tables. NO owner columns. NO 'Marketing Lead'."
+        ),
+        "short": "8–12 lines max. What I noticed + what I'd test first + one CTA.",
+        "founder_dm": (
+            "FOUNDER/DEV DM only. 2–3 options. Each = a message someone could send in TG/X DM. "
+            "Conversational. No résumé. No 'I'm ready to jump in'. No team org chart."
+        ),
+        "x_dm": "3 short X DM openers, each under 280 characters. Natural.",
+        "email": "One short human email (not a deck). Subject line + body.",
+        "job": (
+            "JOB/SERVICE PITCH: external marketer offering help. Natural. Specific to THIS project. "
+            "2 options. Not a CV dump. Not 'comprehensive Web3 marketing strategies'."
+        ),
+        "partner": "Partnership outreach message — mutual value, specific. 2 options.",
+        "30day": "Loose 30-day plan in plain sentences/weeks. NO markdown tables. NO role assignments.",
+        "quick": "What I noticed (2 lines) + what I'd do (3 lines) + first step (1 line).",
+    }.get(style, "Short human proposal.")
 
-    prompt = f"""{GATE}
-{HUMAN_VOICE}
+    prompt = f"""{HUMAN_VOICE}
 
-TASK: Marketing PROPOSAL for this project.
-STYLE: {style} — {style_guide}
+You write messages a real Web3 marketer would actually send.
+NEVER use markdown tables.
+NEVER invent team roles (Marketing Lead, Community Manager, Analytics Lead).
+NEVER write "I'm ready to jump in" / "get the community buzzing" / "comprehensive strategy".
+NEVER write generic airdrop+AMA+Discord playbooks unless the research specifically supports them.
+If social/community data was NOT verified, say that — do not invent TG/Discord plans as if they are missing for sure.
 
-EVIDENCE:
+STYLE: {style}
+{style_rules}
+
+PROJECT EVIDENCE (only use what is here):
 {evidence_brief(sources)}
 
-{"PRIOR OUTPUT TO REFINE:\n" + prior_text[:2500] if prior_text else ""}
+{"REFINE THIS PRIOR TEXT (keep same facts, make more human):\n" + prior_text[:2000] if prior_text else ""}
 
-Structure for full/short/30day (adapt for DM/email/job):
-What I noticed (diagnosis, short)
-What I'd propose (approach)
-What I'd work on (only relevant areas)
-How I'd execute (concrete)
-Expected purpose
-30-day approach (if style needs it)
-Why this fits
-
-For DM/X styles: output 3–4 option variants labeled Option 1/2/3 with different tones.
-Never invent relationships or results.
+Could this text be sent unchanged to 500 random projects? If yes, rewrite until it is specific to THIS project.
+Output finished copy only. No thinking process.
 """
-    text, st = await complete_fast(prompt, max_tokens=2200)
+    text, st = await complete_fast(prompt, max_tokens=1400)
+    text = scrub_internal(text or "")
+    # Strip markdown tables if model still emits them
+    if text and "|" in text and "---" in text:
+        lines = []
+        for ln in text.splitlines():
+            if ln.strip().startswith("|") or set(ln.strip()) <= set("|-: "):
+                continue
+            lines.append(ln)
+        text = "\n".join(lines).strip()
     return text or _fallback("proposals", sources, st), st
 
 

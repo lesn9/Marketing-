@@ -240,31 +240,48 @@ async def deliver_ui(
     edit_message=None,
     show_examples: bool = True,
 ) -> None:
-    """Send or edit a single clean dashboard message."""
-    pages = split_pages(body)
+    """ONE Telegram message only. Pagination via Back/Next edits the same message."""
+    # Strip markdown tables for Telegram readability
+    clean = body or ""
+    if "|" in clean and "---" in clean:
+        lines = []
+        for ln in clean.splitlines():
+            s = ln.strip()
+            if s.startswith("|") or (s and set(s) <= set("|-: ")):
+                continue
+            lines.append(ln)
+        clean = "\n".join(lines)
+    clean = intel.scrub_internal(clean)
+
+    pages = split_pages(clean, max_len=3200)
     sessions = context.application.bot_data.setdefault("sessions", {})
     sess = sessions.setdefault(uid, {})
     if sources is not None:
         sess["sources"] = sources
     sess["last_kind"] = kind
-    sess["last_text"] = body
+    sess["last_text"] = clean
     sess["pages"] = pages
     sess["page"] = 0
     sess["nav_page"] = 0
     sess["title"] = title
-    sess["options"] = intel.extract_options(body)
+    sess["options"] = intel.extract_options(clean)
 
     page0 = pages[0]
-    header = f"{title}\n" if title else ""
     if len(pages) > 1:
-        header = f"{title}\nPage 1/{len(pages)}\n" if title else f"Page 1/{len(pages)}\n"
-    text = header + page0
-    kb = ui_keyboard(page=0, total=len(pages), kind=kind, show_examples=show_examples)
+        header = f"{title}\n<i>Page 1/{len(pages)} — use Next</i>\n\n" if title else f"<i>Page 1/{len(pages)}</i>\n\n"
+    else:
+        header = f"{title}\n\n" if title else ""
+    text = (header + page0)[:4090]
+    # Competition uses category keyboard; others use ui_keyboard
+    if kind == "competition" and sess.get("comp_sid"):
+        kb = competition_keyboard(sess["comp_sid"])
+    else:
+        kb = ui_keyboard(page=0, total=len(pages), kind=kind, show_examples=show_examples)
 
     if edit_message is not None:
         try:
             await edit_message.edit_text(
-                text[:4096], parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True
+                text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True
             )
             sess["msg_id"] = edit_message.message_id
             sess["chat_id"] = edit_message.chat_id
@@ -272,32 +289,39 @@ async def deliver_ui(
         except Exception as exc:
             log.warning("edit failed: %s", exc)
 
-    sent = await msg.reply_html(text[:4096], reply_markup=kb, disable_web_page_preview=True)
+    # Single send only — never reply_long flood
+    sent = await msg.reply_html(text, reply_markup=kb, disable_web_page_preview=True)
     sess["msg_id"] = sent.message_id
     sess["chat_id"] = sent.chat_id
 
 
 
 def competition_keyboard(session_id: str) -> InlineKeyboardMarkup:
+    """Category modes — each mode should return different projects."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("◀️ Back", callback_data=f"ui:back:competition"),
-            InlineKeyboardButton("Next ▶️", callback_data=f"ui:next:competition"),
+            InlineKeyboardButton("🎯 Similar products", callback_data=f"cm:product:{session_id}"),
+            InlineKeyboardButton("🏗️ Architecture", callback_data=f"cm:architecture:{session_id}"),
         ],
         [
-            InlineKeyboardButton("💡 Examples", callback_data=f"ui:examples:competition"),
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"ui:refresh:competition"),
-            InlineKeyboardButton("➕ More", callback_data=f"cm:more:{session_id}"),
-        ],
-        [
-            InlineKeyboardButton("🎯 Product", callback_data=f"cm:product:{session_id}"),
+            InlineKeyboardButton("🐦 Social leaders", callback_data=f"cm:social:{session_id}"),
             InlineKeyboardButton("📣 Marketing", callback_data=f"cm:marketing:{session_id}"),
+        ],
+        [
+            InlineKeyboardButton("🌐 UX leaders", callback_data=f"cm:ux:{session_id}"),
+            InlineKeyboardButton("💬 Community", callback_data=f"cm:community:{session_id}"),
+        ],
+        [
+            InlineKeyboardButton("🚀 Growth", callback_data=f"cm:growth:{session_id}"),
             InlineKeyboardButton("📈 Same-stage", callback_data=f"cm:samestage:{session_id}"),
+        ],
+        [
+            InlineKeyboardButton("➕ More", callback_data=f"cm:more:{session_id}"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh:competition"),
         ],
         [
             InlineKeyboardButton("📊 Audit", callback_data="ui:cmd:marketingaudit"),
             InlineKeyboardButton("📋 Proposal", callback_data="ui:cmd:marketingproposals"),
-            InlineKeyboardButton("💡 Ideas", callback_data="ui:cmd:suggestmarketing"),
         ],
     ])
 
