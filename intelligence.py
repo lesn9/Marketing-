@@ -21,82 +21,58 @@ log = logging.getLogger("mkt.intel")
 # AI
 # ---------------------------------------------------------------------------
 
-SYSTEM = """You are an elite Web3 marketing strategist and growth analyst.
-Never expose internal planning, step lists, or "thinking process".
-Never invent metrics, followers, partnerships, campaigns, or competitors.
-Never speak as the project. Default user role: external marketer/observer.
-Output finished intelligence only — Telegram-readable, human, specific.
+SYSTEM = """You are a sharp Web3 marketing strategist and competitive-intelligence researcher.
+
+Your job is to understand the actual project before giving advice. Research first, then analyze.
+Write like a real Web3 marketer who has actually looked at the project — not an agency deck and not a generic AI assistant.
+
+NON-NEGOTIABLES:
+- Never invent posts, followers, Telegram activity, partnerships, product features, campaigns, metrics or outcomes.
+- FACT = directly supported by collected evidence. INFERENCE = a reasoned interpretation. RECOMMENDATION = what to do next. Never blur them.
+- If a source cannot be checked, say so briefly. Do not turn missing data into a negative claim.
+- The user is external to the project unless explicitly stated otherwise.
+- Never speak as if the user is already hired, a founder, an existing partner, or a customer.
+- Advice must answer what to do, how to do it, where, who it is for, and show an example whenever useful.
+- Use real project-specific details. If a sentence could be pasted onto 100 unrelated Web3 projects, rewrite it.
+- No corporate filler: avoid “leverage”, “maximize”, “in today’s landscape”, “unlock”, “robust”, “seamless”, “drive engagement”, “excellent opportunity”, “I would recommend implementing”, “take it to the next level”.
+- Natural language is preferred. Do not force slang.
+- Telegram output must be clean and mobile-friendly. No markdown tables, no giant walls of text, no internal notes.
+- Do not expose research prompts, chain-of-thought, tool output, session IDs, batch IDs, model routing, safety labels, debug information or implementation details.
 """
 
 GATE = """
-QUALITY GATE:
-- Research-backed only. Never invent followers, TG members, partnerships, metrics, or product claims.
-- FACT vs INFERENCE: label inferences. Missing data = UNAVAILABLE, not "inactive".
-- User is EXTERNAL (outside the project) unless they explicitly say otherwise. Never speak AS the project.
-- Project-specific: if a line could apply to any Web3 project, rewrite it.
-- Telegram-native: short blocks, no markdown tables, no giant numbered lists, no corporate AI phrases
-  ("leverage", "maximize", "in today's landscape", "excellent opportunity").
-- Prefer 3–4 priorities over dumping every channel/tactic.
+FINAL QUALITY CHECK:
+- Research before conclusion.
+- Use evidence from the project itself and relevant external sources.
+- Give concrete examples, not just advice.
+- Separate facts from inferences.
+- Do not repeat the same idea in different words.
+- Keep the answer useful on a phone.
 """
 
 COMPETITOR_RULES = """
-COMPETITORS — relevance first, not keywords.
-
-A candidate is a competitor ONLY if someone interested in THIS project might reasonably
-consider the other instead (same product need, audience, behavior, or narrative space).
-
-NOT enough: both Web3, both AI, both have tokens, both have Telegram, both "gaming".
-
-Categories (do not mix):
-DIRECT — meaningful product/use-case overlap
-INDIRECT — different product, same attention/audience/narrative
-ATTENTION BENCHMARK — not a competitor; useful attention comparison
-MARKETING BENCHMARK — tactic study only
-ECOSYSTEM COMPARABLE — structural, not competitive
-
-Zero direct competitors is VALID. Never force 4 names.
-Never include the subject project itself.
-Never recycle Golem/Render/Chainlink/Ankr/Ocean unless research shows real fit.
-
-For each kept candidate:
-Why comparable (1–2 specific sentences)
-Overlap dimensions
-What they do (factual)
-What to study / What NOT to copy
-Source / ⚠️ INFERRED if not verified
+COMPETITOR RESEARCH RULES:
+- Web3/crypto projects only.
+- Relevance beats quantity. Someone interested in the subject should have a believable reason to consider the comparable, or it must be a clearly useful marketing/UX/community/growth benchmark.
+- Do not force direct competitors. Zero direct competitors is valid.
+- Never include the subject project itself.
+- Do not recycle the same famous projects unless the evidence shows they are relevant.
+- Every named comparable must have a publicly discoverable website in the research evidence.
+- X/Telegram links may only be shown when independently verified.
+- Keep category-specific candidates separate so a project used for Social is not automatically reused for Community, Growth, UX, etc.
+- Categories: SIMILAR PRODUCTS, ARCHITECTURE, SOCIAL LEADERS, MARKETING, UX LEADERS, COMMUNITY, GROWTH, SAME-STAGE, SAME-LEVEL.
+- For each candidate explain why it belongs in that category, what was actually observed, what to learn, how to adapt it, and what not to copy.
 """
 
 
 
-def scrub_internal(text: str) -> str:
-    """Remove leaked chain-of-thought / session metadata from model output."""
-    if not text:
-        return text or ""
-    import re as _re
-    # Drop "thinking process" blocks
-    text = _re.sub(
-        r"(?is)here'?s? a thinking process:.*?(?=\n🏆|\n📊|\n📣|\n🎯|\n⚡|\n🔎|$)",
-        "",
-        text,
-    )
-    text = _re.sub(r"(?im)^\s*(batch\s*\d+|session\s+[a-f0-9]+|user safety:.*|ai shortlist.*|best-effort.*)\s*$", "", text)
-    text = _re.sub(r"(?im)^\s*(new=\d+\s*·\s*shown=\d+|sources:\s*web)\s*$", "", text)
-    text = _re.sub(r"(?im)^\s*\d+\.\s*Analyze the .+\s*$", "", text)
-    text = _re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
 LAST_AI_ERROR: str = ""
-AI_ATTEMPTS: list[str] = []  # internal diagnostics for /settings
 
-# One recovery model if Railway still has a deprecated id (404 model_not_found)
-CURRENT_FALLBACKS = {
-    "groq": "openai/gpt-oss-20b",
-    "groq2": "openai/gpt-oss-20b",
-    "gemini": "gemini-3.5-flash",
-    "cerebras": "llama3.1-8b",
-    "openrouter": "openrouter/free",
-    "openrouter2": "openrouter/free",
+# Skip known-dead Groq model ids immediately
+_DEAD_MODELS = {
+    "llama-3.1-70b-versatile",
+    "llama-3.1-70b",
+    "mixtral-8x7b-32768",
 }
 
 
@@ -111,242 +87,410 @@ def _any_ai_key() -> bool:
     )
 
 
-def _classify_http(status_code: int) -> str:
-    if status_code in (401, 403):
-        return "AI_AUTH_FAILED"
-    if status_code == 429:
-        return "AI_RATE_LIMITED"
-    if status_code == 404:
-        return "AI_MODEL_ERROR"
-    if status_code >= 500:
-        return "AI_PROVIDER_ERROR"
-    if status_code >= 400:
-        return "AI_MODEL_ERROR"
-    return "AI_PROVIDER_ERROR"
-
-
 async def complete(prompt: str, *, max_tokens: int = 2200) -> tuple[str | None, str]:
-    """One configured model per provider. Fail → next provider. No stale hardcoded models."""
-    global LAST_AI_ERROR, AI_ATTEMPTS
-    AI_ATTEMPTS = []
+    """Fast multi-provider AI. Few live models, short timeout, skip dead ids."""
+    global LAST_AI_ERROR
     errors: list[str] = []
     mt = min(max_tokens, 2000)
     prompt = (prompt or "")[:22000]
+
+    # Current live models only (as of 2026) — max 2 tries per provider
+    groq_models = []
+    for m in [config.GROQ_MODEL, "openai/gpt-oss-20b", "openai/gpt-oss-120b"]:
+        if m and m not in _DEAD_MODELS and m not in groq_models:
+            groq_models.append(m)
+    groq_models = groq_models[:2]
+
+    cerebras_models = []
+    for m in [config.CEREBRAS_MODEL, "llama3.1-8b", "qwen-3-32b"]:
+        if m and m not in cerebras_models:
+            cerebras_models.append(m)
+    cerebras_models = cerebras_models[:2]
+
+    gemini_models = []
+    for m in [config.GEMINI_MODEL, "gemini-2.5-flash", "gemini-3.5-flash"]:
+        if m and m not in gemini_models:
+            gemini_models.append(m)
+    gemini_models = gemini_models[:2]
+
+    or_models = []
+    for m in [
+        config.OPENROUTER_MODEL,
+        "openrouter/auto",
+        "google/gemma-2-9b-it:free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "qwen/qwen-2.5-7b-instruct:free",
+    ]:
+        if m and m not in or_models:
+            or_models.append(m)
+    or_models = or_models[:2]
 
     or_extra = {
         "HTTP-Referer": "https://github.com/web3-marketing-intel",
         "X-Title": "Web3 Marketing Intelligence",
     }
 
-    # (name, kind, key, model, extra)
-    chain: list[tuple[str, str, str, str, dict | None]] = []
-    if config.GROQ_API_KEY and config.GROQ_MODEL:
-        chain.append(("groq", "openai", config.GROQ_API_KEY, config.GROQ_MODEL, None))
+    # Prefer fast providers first
+    chain: list[tuple[str, object]] = []
+    if config.GROQ_API_KEY:
+        chain.append(("groq", (config.GROQ_API_KEY, groq_models)))
     if config.GROQ_API_KEY_2:
-        m2 = config.GROQ_MODEL_2 or config.GROQ_MODEL
-        if m2:
-            chain.append(("groq2", "openai", config.GROQ_API_KEY_2, m2, None))
-    if config.GEMINI_API_KEY and config.GEMINI_MODEL:
-        chain.append(("gemini", "gemini", config.GEMINI_API_KEY, config.GEMINI_MODEL, None))
-    if config.CEREBRAS_API_KEY and config.CEREBRAS_MODEL:
-        chain.append(("cerebras", "openai", config.CEREBRAS_API_KEY, config.CEREBRAS_MODEL, None))
-    if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL:
-        chain.append(("openrouter", "openai", config.OPENROUTER_API_KEY, config.OPENROUTER_MODEL, or_extra))
-    if config.OPENROUTER_API_KEY_2 and config.OPENROUTER_MODEL:
-        chain.append(("openrouter2", "openai", config.OPENROUTER_API_KEY_2, config.OPENROUTER_MODEL, or_extra))
+        chain.append(("groq2", (config.GROQ_API_KEY_2, groq_models)))
+    if config.GEMINI_API_KEY:
+        chain.append(("gemini", (config.GEMINI_API_KEY, gemini_models)))
+    if config.CEREBRAS_API_KEY:
+        chain.append(("cerebras", (config.CEREBRAS_API_KEY, cerebras_models)))
+    if config.OPENROUTER_API_KEY:
+        chain.append(("openrouter", (config.OPENROUTER_API_KEY, or_models)))
+    if config.OPENROUTER_API_KEY_2:
+        chain.append(("openrouter2", (config.OPENROUTER_API_KEY_2, or_models)))
 
     if not chain:
-        LAST_AI_ERROR = "no keys or models configured"
+        LAST_AI_ERROR = "no keys"
         return None, "AI_NOT_CONFIGURED"
 
-    def _url_for(name: str) -> str:
+    for name, payload in chain:
+        key, models = payload  # type: ignore
         if name.startswith("groq"):
-            return "https://api.groq.com/openai/v1/chat/completions"
-        if name.startswith("cerebras"):
-            return "https://api.cerebras.ai/v1/chat/completions"
-        return "https://openrouter.ai/api/v1/chat/completions"
-
-    for name, kind, key, model, extra in chain:
-        models_to_try = [model]
-        fb = CURRENT_FALLBACKS.get(name)
-        if fb and fb != model:
-            models_to_try.append(fb)
-
-        text, status, detail = None, "AI_PROVIDER_ERROR", ""
-        for mid in models_to_try:
-            if kind == "gemini":
-                text, status, detail = await _gemini_one(key, mid, prompt, mt)
-            else:
-                text, status, detail = await _openai_one(
-                    _url_for(name), key, mid, prompt, mt, extra=extra,
-                )
-            AI_ATTEMPTS.append(f"{name}|{mid}|{status}|{detail[:80]}")
-            log.info("AI attempt %s model=%s status=%s detail=%s", name, mid, status, detail[:120])
-            if text:
-                LAST_AI_ERROR = ""
-                return scrub_internal(text), f"ok:{name}:{mid}"
-            # Only recover once on model-not-found; other errors → next provider
-            if status != "AI_MODEL_ERROR":
-                break
+            text, status, detail = await _chat(
+                "https://api.groq.com/openai/v1/chat/completions",
+                key, models, prompt, mt,
+            )
+        elif name == "cerebras":
+            text, status, detail = await _chat(
+                "https://api.cerebras.ai/v1/chat/completions",
+                key, models, prompt, mt,
+            )
+        elif name == "gemini":
+            text, status, detail = await _gemini_chat(key, models, prompt, mt)
+        else:
+            text, status, detail = await _chat(
+                "https://openrouter.ai/api/v1/chat/completions",
+                key, models, prompt, mt, extra=or_extra,
+            )
+        if text:
+            LAST_AI_ERROR = ""
+            return text, f"ok:{name}"
         errors.append(f"{name}:{status}:{detail}")
 
-    LAST_AI_ERROR = " | ".join(errors)[:600]
+    LAST_AI_ERROR = " | ".join(errors)[:500]
     log.warning("AI all failed: %s", LAST_AI_ERROR)
-    # Prefer most specific overall status
-    joined = " ".join(errors)
-    if "AI_AUTH_FAILED" in joined:
+    if any("AUTH" in e for e in errors):
         return None, "AI_AUTH_FAILED"
-    if "AI_RATE_LIMITED" in joined or "429" in joined:
+    if any("RATE" in e or "429" in e for e in errors):
         return None, "AI_RATE_LIMITED"
-    if "AI_TIMEOUT" in joined:
+    if any("TIMEOUT" in e for e in errors):
         return None, "AI_TIMEOUT"
-    if "AI_MODEL_ERROR" in joined:
-        return None, "AI_MODEL_ERROR"
     return None, "AI_PROVIDER_ERROR"
 
 
-async def _gemini_one(
-    key: str, model: str, prompt: str, max_tokens: int
+async def _gemini_chat(
+    key: str, models: list[str], prompt: str, max_tokens: int
 ) -> tuple[str | None, str, str]:
-    """Single Gemini model via native generateContent."""
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={key.strip()}"
-    )
+    """Gemini native generateContent (more reliable than OpenAI-compat)."""
+    last = ""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                resp = await client.post(
-                    url,
-                    headers={"Content-Type": "application/json"},
-                    json={
-                        "contents": [{
-                            "role": "user",
-                            "parts": [{
-                                "text": (
-                                    "You are a Web3 marketing strategist. "
-                                    "Be specific and evidence-based.\\n\\n" + prompt
-                                )[:30000]
-                            }],
-                        }],
-                        "generationConfig": {
-                            "temperature": 0.45,
-                            "maxOutputTokens": max_tokens,
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            for model in models[:2]:
+                if not model:
+                    continue
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model}:generateContent?key={key.strip()}"
+                )
+                try:
+                    resp = await client.post(
+                        url,
+                        headers={"Content-Type": "application/json"},
+                        json={
+                            "contents": [
+                                {
+                                    "role": "user",
+                                    "parts": [
+                                        {
+                                            "text": (
+                                                "You are a Web3 marketing strategist. "
+                                                "Be specific and evidence-based.\n\n" + prompt
+                                            )[:30000]
+                                        }
+                                    ],
+                                }
+                            ],
+                            "generationConfig": {
+                                "temperature": 0.45,
+                                "maxOutputTokens": max_tokens,
+                            },
                         },
-                    },
-                )
-            except httpx.TimeoutException:
-                return None, "AI_TIMEOUT", f"{model}:timeout"
-            except Exception as exc:
-                return None, "AI_PROVIDER_ERROR", f"{model}:{exc}"
-
-            if resp.status_code >= 400:
-                kind = _classify_http(resp.status_code)
-                return None, kind, f"{model}:{resp.status_code}:{(resp.text or '')[:160]}"
-
-            data = resp.json() if resp.content else {}
-            try:
-                parts = (
-                    ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
-                    or []
-                )
-                content = "".join(
-                    (p.get("text") or "") for p in parts if isinstance(p, dict)
-                ).strip()
-            except Exception as exc:
-                return None, "AI_PROVIDER_ERROR", f"{model}:parse:{exc}"
-            if content:
-                return content, "ok", model
-            return None, "AI_PROVIDER_ERROR", f"{model}:empty"
+                    )
+                except httpx.TimeoutException:
+                    return None, "AI_TIMEOUT", f"{model}:timeout"
+                except Exception as exc:
+                    last = f"{model}:{exc}"
+                    continue
+                if resp.status_code == 429:
+                    return None, "AI_RATE_LIMITED", f"{model}:429"
+                if resp.status_code in (401, 403):
+                    return None, "AI_AUTH_FAILED", f"{model}:{resp.status_code}"
+                if resp.status_code >= 400:
+                    last = f"{model}:{resp.status_code}:{(resp.text or '')[:100]}"
+                    continue
+                data = resp.json() if resp.content else {}
+                try:
+                    parts = (
+                        ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
+                        or []
+                    )
+                    content = "".join(
+                        (p.get("text") or "") for p in parts if isinstance(p, dict)
+                    ).strip()
+                except Exception as exc:
+                    last = f"{model}:parse:{exc}"
+                    continue
+                if content:
+                    return content, "ok", model
+                last = f"{model}:empty"
     except Exception as exc:
-        return None, "AI_PROVIDER_ERROR", str(exc)[:160]
+        return None, "AI_PROVIDER_ERROR", str(exc)[:120]
+    return None, "AI_PROVIDER_ERROR", last
 
 
-async def _openai_one(
+async def _chat(
     url: str,
     key: str,
-    model: str,
+    models: list[str],
     prompt: str,
     max_tokens: int,
     extra: dict | None = None,
 ) -> tuple[str | None, str, str]:
-    """Single OpenAI-compatible chat completion (Groq / Cerebras / OpenRouter)."""
     headers = {
         "Authorization": f"Bearer {key.strip()}",
         "Content-Type": "application/json",
     }
     if extra:
         headers.update(extra)
+    last_detail = ""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                resp = await client.post(
-                    url,
-                    headers=headers,
-                    json={
-                        "model": model,
-                        "temperature": 0.45,
-                        "max_tokens": max_tokens,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM},
-                            {"role": "user", "content": prompt[:22000]},
-                        ],
-                    },
-                )
-            except httpx.TimeoutException:
-                return None, "AI_TIMEOUT", f"{model}:timeout"
-            except Exception as exc:
-                return None, "AI_PROVIDER_ERROR", f"{model}:{exc}"
-
-            if resp.status_code >= 400:
-                kind = _classify_http(resp.status_code)
-                return None, kind, f"{model}:{resp.status_code}:{(resp.text or '')[:160]}"
-
-            try:
-                data = resp.json() if resp.content else {}
-            except Exception:
-                return None, "AI_PROVIDER_ERROR", f"{model}:bad_json"
-
-            choices = data.get("choices") if isinstance(data, dict) else None
-            if not choices:
-                return None, "AI_PROVIDER_ERROR", f"{model}:no_choices"
-
-            msg = (choices[0] or {}).get("message") or {}
-            text = msg.get("content") or ""
-            if isinstance(text, list):
-                text = "".join(
-                    (p.get("text") if isinstance(p, dict) else str(p)) for p in text
-                )
-            text = str(text).strip()
-            if text:
-                return text, "ok", model
-            return None, "AI_PROVIDER_ERROR", f"{model}:empty"
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            seen: set[str] = set()
+            for model in models[:2]:
+                if not model or model in seen or model in _DEAD_MODELS:
+                    continue
+                seen.add(model)
+                try:
+                    resp = await client.post(
+                        url,
+                        headers=headers,
+                        json={
+                            "model": model,
+                            "temperature": 0.45,
+                            "max_tokens": max_tokens,
+                            "messages": [
+                                {"role": "system", "content": SYSTEM},
+                                {"role": "user", "content": prompt[:22000]},
+                            ],
+                        },
+                    )
+                except httpx.TimeoutException:
+                    last_detail = f"{model}:timeout"
+                    continue
+                except Exception as exc:
+                    last_detail = f"{model}:{exc}"
+                    continue
+                if resp.status_code == 401:
+                    return None, "AI_AUTH_FAILED", "401"
+                if resp.status_code == 429:
+                    last_detail = f"{model}:429"
+                    continue
+                if resp.status_code >= 400:
+                    last_detail = f"{resp.status_code}:{(resp.text or '')[:100]}"
+                    log.warning("AI model %s failed: %s", model, last_detail)
+                    continue
+                try:
+                    data = resp.json() if resp.content else {}
+                except Exception:
+                    last_detail = f"{model}:bad_json"
+                    continue
+                choices = data.get("choices") if isinstance(data, dict) else None
+                if not choices:
+                    last_detail = f"{model}:no_choices"
+                    continue
+                msg = (choices[0] or {}).get("message") or {}
+                text = (msg.get("content") or "").strip()
+                if isinstance(text, list):
+                    # Some providers return content parts
+                    text = "".join(
+                        (p.get("text") if isinstance(p, dict) else str(p)) for p in text
+                    ).strip()
+                if text:
+                    return text, "AI_SUCCESS", model
+                last_detail = f"{model}:empty"
     except Exception as exc:
-        return None, "AI_PROVIDER_ERROR", str(exc)[:160]
-
-
+        return None, "AI_PROVIDER_ERROR", str(exc)[:120]
+    return None, "AI_MODEL_ERROR", last_detail
 
 
 # ---------------------------------------------------------------------------
-# Input parsing
+# Tavily web research
+# ---------------------------------------------------------------------------
+
+async def tavily_search(query: str, *, max_results: int | None = None) -> list[dict[str, Any]]:
+    """Live web search through Tavily. Failure is isolated so the bot can still use direct sources."""
+    if not config.TAVILY_API_KEY:
+        return []
+    payload = {
+        "query": query[:1000],
+        "search_depth": config.TAVILY_SEARCH_DEPTH if config.TAVILY_SEARCH_DEPTH in {"basic", "advanced"} else "advanced",
+        "max_results": max(1, min(max_results or config.TAVILY_MAX_RESULTS, 20)),
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                headers={"Authorization": f"Bearer {config.TAVILY_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            if resp.status_code >= 400:
+                log.warning("Tavily search %s: HTTP %s", query[:80], resp.status_code)
+                return []
+            data = resp.json() if resp.content else {}
+            out = []
+            for r in data.get("results") or []:
+                if not isinstance(r, dict) or not r.get("url"):
+                    continue
+                out.append({
+                    "title": str(r.get("title") or "")[:240],
+                    "url": str(r.get("url") or "")[:1000],
+                    "content": str(r.get("content") or "")[:1800],
+                    "score": r.get("score"),
+                    "query": query,
+                })
+            return out
+    except Exception as exc:
+        log.warning("Tavily search failed: %s", exc)
+        return []
+
+
+async def tavily_extract(urls: list[str]) -> list[dict[str, Any]]:
+    """Extract selected pages. Kept separate from search so only useful URLs are expanded."""
+    if not config.TAVILY_API_KEY or not urls:
+        return []
+    clean = _dedupe([u.strip() for u in urls if u and u.startswith("http")])[:20]
+    if not clean:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/extract",
+                headers={"Authorization": f"Bearer {config.TAVILY_API_KEY}", "Content-Type": "application/json"},
+                json={"urls": clean, "extract_depth": config.TAVILY_EXTRACT_DEPTH if config.TAVILY_EXTRACT_DEPTH in {"basic", "advanced"} else "advanced"},
+            )
+            if resp.status_code >= 400:
+                log.warning("Tavily extract HTTP %s", resp.status_code)
+                return []
+            data = resp.json() if resp.content else {}
+            out = []
+            for r in data.get("results") or []:
+                if isinstance(r, dict) and r.get("url"):
+                    out.append({"url": r.get("url"), "content": str(r.get("raw_content") or r.get("content") or "")[:6000]})
+            return out
+    except Exception as exc:
+        log.warning("Tavily extract failed: %s", exc)
+        return []
+
+
+async def deep_web_research(sources: dict[str, Any], *, mode: str = "general", extra: str = "") -> dict[str, Any]:
+    """Run several focused live-web searches and return evidence for the AI layer."""
+    if not config.TAVILY_API_KEY:
+        return {"enabled": False, "results": [], "extracted": []}
+    identity = project_identity(sources)
+    queries = {
+        "general": [
+            f'"{identity}" official website docs product X Telegram',
+            f'"{identity}" marketing campaign community partnership growth',
+            f'"{identity}" X Twitter posts Space AMA',
+            f'"{identity}" Telegram Discord Reddit community',
+            f'"{identity}" YouTube Medium Mirror GitHub newsletter media',
+        ],
+        "competition": [
+            f'Web3 projects similar to "{identity}" product use case competitors',
+            f'"{identity}" competitors alternative Web3 projects',
+            f'"{identity}" marketing campaign community partnership growth',
+            f'"{identity}" X Twitter Telegram Discord YouTube Reddit Medium GitHub AMA Space',
+        ],
+    }.get(mode, [
+        f'"{identity}" {mode} Web3',
+        f'"{identity}" {mode} marketing community growth',
+        f'Web3 {mode} projects examples campaigns',
+    ])
+    if extra:
+        queries = [q + " " + extra[:300] for q in queries]
+        category_terms = {
+            "social": "X Twitter content posts Spaces social strategy creators",
+            "marketing": "campaign ads creators KOL sponsorship events PR launch marketing",
+            "community": "Telegram Discord ambassadors quests community onboarding engagement",
+            "growth": "growth loops referrals quests waitlist acquisition retention activation",
+            "ux": "website UX onboarding product interface docs conversion user journey",
+            "architecture": "architecture protocol stack mechanism technical design docs",
+            "samestage": "early stage emerging growing community marketing launch",
+            "samelevel": "similar maturity market level audience scale growth",
+            "product": "product use case users alternatives",
+            "similar": "same user need product category alternatives",
+        }
+        mode_key = extra.split("category=", 1)[1].split(";", 1)[0] if "category=" in extra else ""
+        if mode_key in category_terms:
+            queries.append(f'"{identity}" {category_terms[mode_key]}')
+    gathered: list[dict[str, Any]] = []
+    for q in queries:
+        gathered.extend(await tavily_search(q, max_results=6))
+    # Deduplicate by URL while keeping the strongest first occurrence.
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for r in gathered:
+        u = r.get("url", "").rstrip("/")
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        unique.append(r)
+    # Expand the most relevant pages, not every search result.
+    extract_urls = [r["url"] for r in unique[:8] if r.get("url")]
+    official = (sources.get("website") or {}).get("url")
+    docs = ((sources.get("website") or {}).get("links") or {}).get("docs") or []
+    for u in [official, *docs]:
+        if u and u not in extract_urls:
+            extract_urls.append(u)
+    extracted = await tavily_extract(extract_urls[:12])
+    return {"enabled": True, "results": unique[:18], "extracted": extracted[:8], "queries": queries}
+
+
+def project_identity(sources: dict[str, Any]) -> str:
+    w = sources.get("website") or {}
+    x = sources.get("x") or {}
+    return str(w.get("title") or x.get("name") or x.get("handle") or sources.get("extra_context") or "Web3 project")[:180]
+
+
+# ---------------------------------------------------------------------------
+# Input parsing + sources
 # ---------------------------------------------------------------------------
 
 PROJECT_TYPES = {
-    "meme", "defi", "nft", "gamefi", "ai", "rwa", "depin", "infra",
-    "l2", "wallet", "exchange", "social", "dao", "tooling", "other",
+    "meme", "utility", "defi", "infrastructure", "gaming", "ai", "consumer",
+    "social", "depin", "rwa", "trading", "prediction", "nft", "launchpad",
+    "protocol", "ecosystem", "dex", "wallet", "other",
 }
 
 
 @dataclass
 class ParsedInput:
-    raw: str = ""
-    x_handles: list = field(default_factory=list)
-    websites: list = field(default_factory=list)
-    telegrams: list = field(default_factory=list)
-    contracts: list = field(default_factory=list)
+    raw: str
+    x_handles: list[str] = field(default_factory=list)
+    websites: list[str] = field(default_factory=list)
+    telegrams: list[str] = field(default_factory=list)
+    contracts: list[str] = field(default_factory=list)
     project_type: str | None = None
-    extra_context: str | None = None
-    competitor_focus: str | None = None
+    extra_context: str = ""
+    competitor_focus: str | None = None  # for /competitor last token(s)
 
 
 def parse_user_input(args: list[str], *, competitor_mode: bool = False) -> ParsedInput:
@@ -703,6 +847,13 @@ async def collect_sources(parsed: ParsedInput, bot=None) -> dict[str, Any]:
             sources["project_type"] = "nft (inferred)"
         elif any(k in low for k in ("ai ", "agent", "llm")):
             sources["project_type"] = "ai (inferred)"
+    # Tavily is the deep-research layer: search beyond the supplied URLs so analysis is not based only on the homepage.
+    if config.TAVILY_API_KEY:
+        try:
+            sources["web_research"] = await deep_web_research(sources, mode="general")
+        except Exception as exc:
+            log.warning("deep research: %s", exc)
+            sources["web_research"] = {"enabled": True, "results": [], "extracted": [], "error": str(exc)[:120]}
     return sources
 
 
@@ -749,6 +900,13 @@ def evidence_brief(sources: dict[str, Any]) -> str:
             parts.append(f"TELEGRAM UNAVAILABLE: {tg.get('error')}")
     if sources.get("contracts"):
         parts.append(f"CONTRACTS: {sources['contracts']}")
+    wr = sources.get("web_research") or {}
+    if wr.get("results"):
+        parts.append("LIVE WEB RESEARCH:")
+        for r in (wr.get("results") or [])[:12]:
+            parts.append(f"  SOURCE: {r.get('title')} | {r.get('url')}\n  FINDING: {r.get('content','')[:900]}")
+    for r in (wr.get("extracted") or [])[:5]:
+        parts.append(f"  EXTRACTED: {r.get('url')}\n  CONTENT: {r.get('content','')[:1400]}")
     if sources.get("limitations"):
         parts.append("LIMITATIONS:\n  - " + "\n  - ".join(sources["limitations"]))
     return "\n\n".join(parts) if parts else "No sources."
@@ -770,36 +928,13 @@ def sources_label(sources: dict[str, Any]) -> str:
 def _fallback(kind: str, sources: dict[str, Any], status: str) -> str:
     has_web = bool((sources.get("website") or {}).get("ok"))
     has_x = bool((sources.get("x") or {}).get("ok"))
-    lines = [
-        f"⚠️ AI analysis temporarily unavailable ({status}).",
-        "Sources collected OK — the AI API call failed (not the website scrape).",
-        f"web={'✓' if has_web else '—'} · X={'✓' if has_x else '—'}",
-    ]
-    if has_web:
-        w = sources["website"]
-        lines.append(f"Site: {w.get('title')}")
-        if w.get("meta_description"):
-            lines.append(f"Meta: {w.get('meta_description')[:200]}")
-        if not w.get("has_community_link"):
-            lines.append(
-                "🕳️ GAP: No obvious public TG/Discord link on website — "
-                "add a primary community CTA in header/hero."
-            )
-    if has_x:
-        lines.append(f"X: @{(sources.get('x') or {}).get('handle')} mode={(sources.get('x') or {}).get('mode')}")
-    if LAST_AI_ERROR:
-        lines.append(f"Detail: {LAST_AI_ERROR[:300]}")
     if status == "AI_RATE_LIMITED":
-        lines.append(
-            "⏳ Rate limit — wait 1–5 minutes. Free Groq/OpenRouter limits are easy to hit "
-            "after a few long /market or /funnels reports. Try again shortly."
-        )
-    else:
-        lines.append(
-            "Retry in 1–2 minutes. Check Groq console usage / OpenRouter credits. "
-            "Optional: set GROQ_MODEL=llama-3.1-8b-instant"
-        )
-    return "\n".join(lines)
+        return "The analysis is temporarily rate-limited. Try Refresh in a moment."
+    if status in {"AI_NOT_CONFIGURED", "AI_AUTH_FAILED"}:
+        return "The analysis model is not available right now. Check the AI provider settings, then Refresh."
+    if has_web or has_x:
+        return "I collected the project sources, but the analysis step failed this time. Try Refresh — the research itself is still usable."
+    return "I couldn't collect enough usable project data for this command yet. Check the project URL/X handle and try Refresh."
 
 
 # ---------------------------------------------------------------------------
@@ -812,16 +947,7 @@ async def run_marketing_audit(sources: dict[str, Any]) -> tuple[str, str]:
 {HUMAN_VOICE}
 {PARTNERSHIP_RULES}
 
-Produce a MARKETING AUDIT for this project (Telegram-readable).
-
-Start with:
-⚡ QUICK TAKE
-
-Then only sections you have evidence for:
-CURRENT STATE · WHAT'S WORKING · MAIN GAPS · PRIORITIES (max 4) · DO THIS FIRST
-
-No markdown tables. No dumping every channel. No inventing social metrics.
-Missing source data = UNAVAILABLE. User is external observer.
+Produce a full MARKETING INTELLIGENCE AUDIT for this Web3 project.
 
 EVIDENCE:
 {evidence_brief(sources)}
@@ -1026,16 +1152,7 @@ Never invent existing relationships. Prefer partner types unless a name is in ev
 
 async def run_organic(sources: dict[str, Any]) -> tuple[str, str]:
     prompt = f"""{GATE}
-ORGANIC growth for THIS project only (minimal paid).
-
-Telegram format:
-⚡ QUICK TAKE (1–3 sentences)
-🔎 CURRENT STATE (short bullets of verified observations only)
-🎯 MAIN GAPS (3 max)
-🚀 WHAT I WOULD DO (3–4 priorities: TITLE / What / Why / How)
-👉 DO THIS FIRST (one action)
-No markdown tables. No generic "post more / host AMA / use KOLs" without project-specific why.
-If X/TG activity was not verified, say UNAVAILABLE — do not call it inactive.
+ORGANIC growth plan for this specific project (minimal paid ads).
 
 EVIDENCE:
 {evidence_brief(sources)}
@@ -1162,17 +1279,18 @@ what works and WHY, what subject can adapt at its stage, what NOT to copy,
 
 
 MODES = {
-    "similar": "Most relevant comparable Web3 projects by product + audience.",
-    "product": "Similar product / problem solved — different projects than other modes.",
-    "architecture": "Similar architecture/mechanism — not the same list as product mode.",
-    "social": "Projects that execute better on X/social in a related niche — NEW names.",
-    "marketing": "Projects with stronger marketing execution — NEW names, not social duplicates.",
-    "positioning": "Clearer positioning examples — NEW names.",
-    "ux": "Stronger website/product UX — NEW names.",
-    "community": "Stronger community systems — NEW names, not growth/social duplicates.",
-    "growth": "Notable growth tactics — NEW names, not community/social duplicates.",
-    "product_leaders": "Stronger product experience — NEW names.",
-    "samestage": "Same-stage comparables only — avoid giants unless truly same stage.",
+    "similar": "Most relevant comparable Web3 projects.",
+    "product": "Similar products / problem solved.",
+    "architecture": "Similar architecture/mechanism.",
+    "social": "Stronger X/social execution (relevant category).",
+    "marketing": "Stronger marketing execution.",
+    "positioning": "Clearer positioning examples.",
+    "ux": "Stronger website/product UX.",
+    "community": "Stronger community/support.",
+    "growth": "Notable growth/campaign strategies.",
+    "product_leaders": "Stronger product experience/value delivery.",
+    "samestage": "Emerging / same-stage growth comparables (prioritize).",
+    "samelevel": "Projects at a similar maturity, audience scale, and market level.",
 }
 
 
@@ -1181,69 +1299,97 @@ async def discover_competitors(
     *,
     mode: str = "similar",
     exclude: list[str] | None = None,
-    batch_size: int = 6,
+    batch_size: int = 5,
 ) -> tuple[str, str, list[str]]:
+    """Research category-specific Web3 comparables. Count is evidence-driven, never quota-driven."""
     exclude = exclude or []
     mode_desc = MODES.get(mode, MODES["similar"])
+    extra = f"category={mode}; {mode_desc}"
+    try:
+        research = await deep_web_research(sources, mode="competition", extra=extra)
+    except Exception as exc:
+        log.warning("competition research: %s", exc)
+        research = {"results": [], "extracted": []}
+
+    research_lines = []
+    for r in (research.get("results") or [])[:16]:
+        research_lines.append(f"SOURCE: {r.get('title')}\nURL: {r.get('url')}\nTEXT: {r.get('content','')[:1200]}")
+    for r in (research.get("extracted") or [])[:6]:
+        research_lines.append(f"EXTRACTED URL: {r.get('url')}\nTEXT: {r.get('content','')[:1800]}")
+    evidence = evidence_brief(sources)
     prompt = f"""{GATE}
 {COMPETITOR_RULES}
 
-COMPETITOR DISCOVERY mode={mode}: {mode_desc}
+TASK: Find useful Web3 comparables for the SUBJECT in category: {mode.upper()}.
+CATEGORY MEANING: {mode_desc}
 
 SUBJECT:
-{evidence_brief(sources)}
+{evidence}
 
-ALREADY SHOWN (do not repeat names/aliases/URLs):
-{exclude if exclude else "(none)"}
+LIVE WEB RESEARCH:
+{chr(10).join(research_lines)[:15000] if research_lines else '(No Tavily results. Use only directly verified evidence; do not invent.)'}
 
-Return up to {batch_size} NEW candidates only if genuinely comparable.\nCRITICAL: mode={mode} means pick projects that excel on THAT dimension.\nDo NOT reuse the same projects across modes. Different mode → different projects.\nIf mode is community → projects known for community. social → strong X. growth → growth tactics.\nproduct → similar product. architecture → similar mechanism. samestage → similar stage.\n
-Zero is valid if none pass the relevance test.
-Do NOT invent bird-themed tokens or keyword matches.
-Do NOT include subject project itself.
+ALREADY USED IN ANY CATEGORY — DO NOT REUSE:
+{', '.join(exclude) if exclude else '(none)'}
 
-Template per competitor (clean user output — no session/batch/safety metadata):
+Return ONLY candidates supported by the research above. Prefer 2–5 genuinely useful candidates; fewer is better than padding.
+For each candidate use exactly this shape:
 🏆 NAME
-Type: Direct / Indirect / Attention benchmark / Marketing benchmark
-Why it matters: 1–2 specific sentences
-🌐 Website: https://... (required if known, else Not publicly verified)
-𝕏 X: @handle or Not publicly verified
-Community: Telegram/Discord if verified, else Not publicly verified
-What they do: short factual
-What to study: specific
-What NOT to copy: specific
+🌐 WEBSITE: https://...
+WHY IT BELONGS: one concrete reason tied to this category.
+OBSERVED: one or two things actually supported by the sources.
+LEARN: what the subject can study.
+ADAPT: a concrete way to adapt the idea without copying.
+DON'T COPY: one boundary or mismatch.
 
-Then if useful: 👉 What subject can adapt
-Final line only: NAMES: name1 | name2 | ...
+Then a short section:
+📌 WHAT THIS CATEGORY SHOWS
+2–4 lines.
+
+Do not output NAMES:, batch IDs, session IDs, confidence labels, internal notes, or a generic warning.
 """
-    text, st = await complete(prompt, max_tokens=3800)
-    text = scrub_internal(text or "")
+    text, st = await complete(prompt, max_tokens=2800)
     if not text:
-        return scrub_internal(_fallback("competition", sources, st)), st, []
+        return "I couldn't complete the live competitor research right now. Try Refresh in a moment.", st, []
 
-    urls = re.findall(r"https?://[^\s\)\]\>]+", text)
-    notes = []
-    seen = set()
-    for url in urls[:5]:
-        if url in seen or "t.me/" in url or "x.com/" in url or "twitter.com" in url:
-            continue
-        seen.add(url)
-        w = await fetch_website(url)
-        if w.get("ok"):
-            notes.append(f"✓ Live-checked {url} — {w.get('title') or 'ok'}")
-        else:
-            notes.append(f"✗ Live-check failed {url}: {w.get('error')}")
-
+    # Extract only candidates that have an explicit website in the returned block.
+    blocks = re.split(r"(?m)^\s*🏆\s*", text)
+    cleaned_blocks: list[str] = []
     names: list[str] = []
-    m = re.search(r"NAMES:\s*(.+)$", text, re.I | re.M)
-    if m:
-        names = [n.strip() for n in m.group(1).split("|") if n.strip()]
-        text = re.sub(r"\n?NAMES:\s*.+$", "", text, flags=re.I | re.M).strip()
+    used_lower = {x.lower().strip() for x in exclude}
+    for block in blocks[1:]:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        name = re.sub(r"\s*[—|-].*$", "", lines[0]).strip(" *#")
+        url_match = re.search(r"https?://[^\s)\]>]+", block)
+        if not name or not url_match:
+            continue
+        url = url_match.group(0).rstrip(".,")
+        if any(x in url.lower() for x in ("x.com/", "twitter.com/", "t.me/", "telegram.me/")):
+            continue
+        if name.lower() in used_lower or any(name.lower() == n.lower() for n in names):
+            continue
+        # Live-check the website. This is the final gate against hallucinated URLs.
+        try:
+            checked = await fetch_website(url)
+        except Exception:
+            checked = {"ok": False}
+        if not checked.get("ok"):
+            continue
+        names.append(name)
+        cleaned_blocks.append("🏆 " + "\n".join(lines))
+        if len(names) >= batch_size:
+            break
 
-    if notes:
-        text += "\n\n🔍 Live verification:\n" + "\n".join(notes)
-    if "⚠️" not in text and "INFERRED" in text.upper():
-        text += "\n\n⚠️ Some candidates are inferred — verify websites before acting."
-    return text, st, names
+    if not names:
+        return "I couldn't verify enough genuinely relevant Web3 comparables for this category yet. Try another category or Refresh.", st, []
+    body = "\n\n".join(cleaned_blocks)
+    # Keep the category conclusion, but strip any internal leftovers.
+    summary_match = re.search(r"(?ms)^📌\s*WHAT THIS CATEGORY SHOWS\s*(.*)$", text)
+    if summary_match:
+        body += "\n\n📌 WHAT THIS CATEGORY SHOWS\n" + summary_match.group(1).strip()
+    return body, st, names
 
 
 # ---------------------------------------------------------------------------
@@ -1251,31 +1397,12 @@ Final line only: NAMES: name1 | name2 | ...
 # ---------------------------------------------------------------------------
 
 HUMAN_VOICE = """
-HUMAN VOICE — NON-NEGOTIABLE.
-Sound like a real marketer who looked at THIS project.
-Ban: "I believe", "I'm excited", "strong opportunity", "leverage", "maximize", "unlock",
-"drive engagement", "increase visibility", "build brand awareness", "strategic partnerships",
-"robust community", "in today's competitive landscape", "take it to the next level",
-"I would recommend", "the project should consider", "this presents an excellent opportunity",
-"by leveraging", "to maximize", "synergy", "game-changing", "high-impact", "seamlessly".
-Prefer: "I'd test…", "I'd leave alone…", "Honestly I wouldn't…", "The interesting part is…",
-"If this were mine…", "I'd start here…".
-Never show thinking process / numbered internal steps / "Analyze the Request".
-
-Write like a sharp human Web3 marketer who looked at THIS project — not corporate AI.
+Write like a sharp human who knows Web3 marketing — not corporate AI.
 Ban: "excellent opportunity", "leverage", "in today's landscape", "significantly enhance",
-"maximize growth", "robust strategy", "drive engagement", "build awareness", "foster community".
-Prefer: "One thing I'd test…", "I'd lean into…", "Honestly I'd…", "There's a gap between…"
-
-ROLE DEFAULT: user is OUTSIDE the project (external marketer / observer).
-Never speak as the project ("Join our…", "We're launching…").
-Never assume user is a customer, investor, partner, or employee unless they say so.
-
-USER POV = knowledgeable outsider raising a useful observation to the team.
-MARKETER POV = external marketer pointing at a growth opportunity.
-DEV DM = outreach about marketing/growth — NOT "I want to use your product".
-JOB PITCH = only when explicitly requested.
-X REPLY = something that fits under a project post.
+"I would recommend implementing", "it is important to note", "maximize growth and engagement".
+Prefer natural lines: "One thing I'd test…", "You could turn this into…", "Honestly I'd lean into…"
+Vary sentence length. Be specific to the evidence. No invented metrics.
+Default: give 3–4 DISTINCT options (different angle/structure), not synonym rewrites.
 """
 
 PARTNERSHIP_RULES = """
@@ -1300,60 +1427,43 @@ async def run_marketing_proposals(
     style: str = "full",
     prior_text: str = "",
 ) -> tuple[str, str]:
-    """Human proposals — never agency templates, tables, or fake org charts."""
-    style = (style or "full").lower()
-    style_rules = {
-        "full": (
-            "One coherent proposal a marketer would paste into a doc for a team. "
-            "Max ~350 words. Sections only if needed: What I noticed / What I'd do / First 2 weeks. "
-            "NO tables. NO owner columns. NO 'Marketing Lead'."
-        ),
-        "short": "8–12 lines max. What I noticed + what I'd test first + one CTA.",
-        "founder_dm": (
-            "FOUNDER/DEV DM only. 2–3 options. Each = a message someone could send in TG/X DM. "
-            "Conversational. No résumé. No 'I'm ready to jump in'. No team org chart."
-        ),
-        "x_dm": "3 short X DM openers, each under 280 characters. Natural.",
-        "email": "One short human email (not a deck). Subject line + body.",
-        "job": (
-            "JOB/SERVICE PITCH: external marketer offering help. Natural. Specific to THIS project. "
-            "2 options. Not a CV dump. Not 'comprehensive Web3 marketing strategies'."
-        ),
-        "partner": "Partnership outreach message — mutual value, specific. 2 options.",
-        "30day": "Loose 30-day plan in plain sentences/weeks. NO markdown tables. NO role assignments.",
-        "quick": "What I noticed (2 lines) + what I'd do (3 lines) + first step (1 line).",
-    }.get(style, "Short human proposal.")
+    style_guide = {
+        "full": "Full marketing proposal someone could send a team.",
+        "short": "Short pitch (8–12 lines max).",
+        "founder_dm": "Natural founder/dev DM — helpful, not salesy unless asked.",
+        "x_dm": "Very short X DM opener (under 280 chars per option, 3 options).",
+        "email": "Professional but human email proposal.",
+        "job": "Job/application pitch — clear value, not desperate.",
+        "partner": "Partnership-style proposal.",
+        "community": "Community-focused proposal with concrete community execution.",
+        "30day": "Concrete 30-day execution plan.",
+        "quick": "Ultra-short proposal (what I noticed + what I'd do + first step).",
+    }.get(style, "Full proposal")
 
-    prompt = f"""{HUMAN_VOICE}
+    prompt = f"""{GATE}
+{HUMAN_VOICE}
 
-You write messages a real Web3 marketer would actually send.
-NEVER use markdown tables.
-NEVER invent team roles (Marketing Lead, Community Manager, Analytics Lead).
-NEVER write "I'm ready to jump in" / "get the community buzzing" / "comprehensive strategy".
-NEVER write generic airdrop+AMA+Discord playbooks unless the research specifically supports them.
-If social/community data was NOT verified, say that — do not invent TG/Discord plans as if they are missing for sure.
+TASK: Marketing PROPOSAL for this project.
+STYLE: {style} — {style_guide}
 
-STYLE: {style}
-{style_rules}
-
-PROJECT EVIDENCE (only use what is here):
+EVIDENCE:
 {evidence_brief(sources)}
 
-{"REFINE THIS PRIOR TEXT (keep same facts, make more human):\n" + prior_text[:2000] if prior_text else ""}
+{"PRIOR OUTPUT TO REFINE:\n" + prior_text[:2500] if prior_text else ""}
 
-Could this text be sent unchanged to 500 random projects? If yes, rewrite until it is specific to THIS project.
-Output finished copy only. No thinking process.
+Write this like something a real person could actually send. Do not write an agency proposal unless the requested style is explicitly a full proposal.
+
+For full/short/30day: start from one or two things actually observed in the project, then show what I would do, how it would be executed, and give concrete examples.
+For founder/dev DM: sound like a knowledgeable outsider opening a conversation, not someone already hired.
+For job pitch: clearly offer marketing/community/growth services and explain what I would take off their plate.
+For X DM: short, natural and specific.
+For partnership: explain the mutual fit and the actual collaboration format.
+For community: focus on what would help the community, not selling a service.
+
+For DM/X styles: output 2–3 genuinely different versions. Keep them copyable and natural. Do not sound like a template.
+Never invent relationships or results.
 """
-    text, st = await complete_fast(prompt, max_tokens=1400)
-    text = scrub_internal(text or "")
-    # Strip markdown tables if model still emits them
-    if text and "|" in text and "---" in text:
-        lines = []
-        for ln in text.splitlines():
-            if ln.strip().startswith("|") or set(ln.strip()) <= set("|-: "):
-                continue
-            lines.append(ln)
-        text = "\n".join(lines).strip()
+    text, st = await complete_fast(prompt, max_tokens=2200)
     return text or _fallback("proposals", sources, st), st
 
 
@@ -1366,54 +1476,48 @@ async def run_reply_assistant(
     perspective: str = "",
     prior_options: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Generate actual sendable replies — NEVER a marketing audit."""
-    evidence = evidence_brief(sources) if sources else "(no project research — answer from user text only)"
-    # Cap evidence so model cannot expand into a full audit
-    if len(evidence) > 1800:
-        evidence = evidence[:1800] + "\n…(truncated)"
+    """Conversational marketing reply / idea generator."""
+    evidence = evidence_brief(sources) if sources else "(no project research in session — answer from user text only)"
     prior = prior_options or []
-    mode_map = {
-        "auto": "Infer: direct reply / X reply / community / founder DM / marketing observation",
-        "x_reply": "X REPLY only — short text for under a project post",
-        "community": "COMMUNITY REPLY — natural TG/Discord message",
-        "dev_dm": "FOUNDER/DEV DM — marketing/growth outreach, not product-usage request",
-        "observation": "Short marketing observation the user can drop in chat",
-        "job": "Service/job pitch — only this mode may sell the user's marketing help",
-        "reply": "Natural conversational reply to what was said",
-    }
-    prompt = f"""{HUMAN_VOICE}
+    prompt = f"""{GATE}
+{HUMAN_VOICE}
 
-TASK: /reply — conversational RESPONSE generator.
-You write messages the user can SEND or POST.
-You do NOT write marketing audits, competitor lists, CURRENT STATE, DIAGNOSIS, EXECUTION, WHY sections, or weekly plans.
+You are a conversational marketing assistant for Web3.
 
-USER REQUEST / MESSAGE TO RESPOND TO:
+USER REQUEST:
 {user_request}
 
-MODE: {mode} — {mode_map.get(mode, mode)}
+MODE HINT: {mode}
 TONE: {tone or "natural"}
-PERSPECTIVE: {perspective or "external outsider"}
+PERSPECTIVE: {perspective or "default"}
 
-OPTIONAL PROJECT CONTEXT (use only if it helps the reply; do not expand into research):
+PROJECT EVIDENCE (may be empty):
 {evidence}
 
-AVOID repeating these prior options:
-{prior[:6] if prior else "(none)"}
+ALREADY USED OPTIONS (do not repeat wording or same angle):
+{prior[:8] if prior else "(none)"}
 
-OUTPUT RULES:
-- 2–3 options max. Each option = 1–4 sentences.
-- Label: Option 1 / Option 2 / Option 3
-- Respond to WHAT WAS SAID or answer the user's ask directly.
-- External marketer/observer by default — never speak as the project.
-- No tables, no competitor tiering, no "CURRENT STATE".
-- If mode is x_reply: write under-the-post style only.
-- If mode is dev_dm: founder outreach about a marketing/growth idea.
-- If mode is job: only then position user as offering marketing help.
+ROLE RULES:
+- DEFAULT = external person who researched the project.
+- USER POV = an informed outsider raising a useful observation/question to the team or community. Never pretend to be a customer.
+- MARKETER = an external marketer pointing out a concrete growth/content opportunity. Never speak as if already hired.
+- DEV DM = a short growth/marketing observation to the founder/dev/team. It is not a request to use their product or API.
+- X REPLY = an actual reply to the post, not a new announcement and not a sales pitch.
+- COMMUNITY = a natural Telegram/Discord contribution, not an agency pitch unless requested.
+- JOB PITCH = only when explicitly requested; clearly offer the user's services.
+
+Rules:
+- If user wants a quick idea for a DM/dev chat → 2–3 short, precise options.
+- If user pastes someone else's message → respond to WHAT THEY ACTUALLY SAID.
+- Distinguish useful contribution, team suggestion, and service pitch.
+- Do not sound like you're job-hunting unless asked.
+- Keep each option tight and genuinely different; do not synonym-swap the same sentence.
+- Never turn an external observation into “we should…” unless the user explicitly asked for copy written as the project team.
 """
-    text, st = await complete_fast(prompt, max_tokens=900)
+    text, st = await complete_fast(prompt, max_tokens=1600)
     if not text:
         return (
-            f"⚠️ AI unavailable ({st}). Retry shortly.\n{LAST_AI_ERROR[:180]}",
+            f"⚠️ AI unavailable ({st}). Try again in a minute.\nDetail: {LAST_AI_ERROR[:200]}",
             st,
         )
     return text, st
@@ -1453,6 +1557,27 @@ Option 3 — [label]
     text, st = await complete_fast(prompt, max_tokens=1500)
     return text or f"⚠️ Shuffle failed ({st}). Wait and retry.", st
 
+
+
+async def run_examples(command: str, sources: dict[str, Any] | None, current: str = "") -> tuple[str, str]:
+    """Generate concrete examples for the current command without turning them into generic advice."""
+    evidence = evidence_brief(sources) if sources else "(no project research available)"
+    prompt = f"""{HUMAN_VOICE}
+
+COMMAND: /{command}
+PROJECT EVIDENCE:
+{evidence}
+
+CURRENT OUTPUT:
+{current[:5000]}
+
+Give 3 concrete examples of how the advice above would actually look in the real world for this project.
+Examples can be sample X posts, campaign mechanics, community prompts, landing-page copy, outreach copy, content series, event format, or execution steps depending on the command.
+Do not repeat the advice. Show the thing itself.
+Keep it concise and mobile-friendly.
+"""
+    text, st = await complete_fast(prompt, max_tokens=1600)
+    return text or "No examples could be generated right now. Try Refresh.", st
 
 def extract_options(text: str) -> list[str]:
     """Pull Option N blocks for variation memory."""
