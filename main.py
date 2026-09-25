@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import html
+import re
 import logging
 import secrets
 import sys

@@ -1241,10 +1241,8 @@ Final line only: NAMES: name1 | name2 | ...
 
     if notes:
         text += "\n\n🔍 Live verification:\n" + "\n".join(notes)
-    text += (
-        "\n\n⚠️ AI shortlist + best-effort site checks. "
-        "INFERRED candidates are not fully live-verified. Use More / mode buttons."
-    )
+    if "⚠️" not in text and "INFERRED" in text.upper():
+        text += "\n\n⚠️ Some candidates are inferred — verify websites before acting."
     return text, st, names
 
 
