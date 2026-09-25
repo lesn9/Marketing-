@@ -39,4 +39,4 @@ CEREBRAS_MODEL = env("CEREBRAS_MODEL", default="llama3.1-8b")
 X_BEARER_TOKEN = env("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN")
 DATABASE_PATH = env("DATABASE_PATH", default="./marketing.db")
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
-BUILD = "2026-09-25-mkt-responsive-fix-v10"
+BUILD = "2026-09-25-mkt-parsedinput-fix-v11"

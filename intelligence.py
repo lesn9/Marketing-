@@ -290,6 +290,29 @@ async def _openai_one(
 
 
 
+
+# ---------------------------------------------------------------------------
+# Input parsing
+# ---------------------------------------------------------------------------
+
+PROJECT_TYPES = {
+    "meme", "defi", "nft", "gamefi", "ai", "rwa", "depin", "infra",
+    "l2", "wallet", "exchange", "social", "dao", "tooling", "other",
+}
+
+
+@dataclass
+class ParsedInput:
+    raw: str = ""
+    x_handles: list = field(default_factory=list)
+    websites: list = field(default_factory=list)
+    telegrams: list = field(default_factory=list)
+    contracts: list = field(default_factory=list)
+    project_type: str | None = None
+    extra_context: str | None = None
+    competitor_focus: str | None = None
+
+
 def parse_user_input(args: list[str], *, competitor_mode: bool = False) -> ParsedInput:
     raw = " ".join(args).strip()
     result = ParsedInput(raw=raw)
