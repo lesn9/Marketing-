@@ -108,24 +108,195 @@ async def reply_long(msg, text: str) -> None:
             await msg.reply_text(chunk)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Telegram UI — one message, edit in place, page navigation
+# ---------------------------------------------------------------------------
+
+DASHBOARD_CMDS = {
+    "market", "marketingaudit", "positioning", "campaigns", "marketgaps",
+    "opportunities", "funnels", "marketingfunnels", "suggestmarketing",
+    "marketingideas", "organicmarketing", "zeromarketing", "0marketing",
+    "marketingproposals", "proposals", "report", "fullpack", "partnerships",
+    "spaces", "ama", "competition",
+}
+
+
+def split_pages(text: str, max_len: int = 2800) -> list[str]:
+    """Split long output into navigable pages at section boundaries."""
+    text = (text or "").strip()
+    if not text:
+        return ["(empty)"]
+    if len(text) <= max_len:
+        return [text]
+    parts = re.split(r"\n(?=(?:⚡|🔎|🎯|🚀|👉|📣|📊|🏆|💡|⚠️|📅|🤝|🎙️|🎤|📈|🪙|🌱|📋|📩|💼))", text)
+    pages: list[str] = []
+    buf = ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if not buf:
+            buf = part
+        elif len(buf) + 2 + len(part) <= max_len:
+            buf = buf + "\n\n" + part
+        else:
+            pages.append(buf)
+            buf = part
+    if buf:
+        pages.append(buf)
+    final: list[str] = []
+    for pg in pages:
+        while len(pg) > max_len:
+            cut = pg.rfind("\n", 0, max_len)
+            if cut < 400:
+                cut = max_len
+            final.append(pg[:cut].strip())
+            pg = pg[cut:].strip()
+        if pg:
+            final.append(pg)
+    return final or [text[:max_len]]
+
+
+def ui_keyboard(
+    *,
+    page: int,
+    total: int,
+    kind: str,
+    show_examples: bool = True,
+    nav_page: int = 0,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Back", callback_data=f"ui:back:{kind}"))
+    if total > 1:
+        nav.append(InlineKeyboardButton(f"{page + 1}/{total}", callback_data="ui:noop"))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"ui:next:{kind}"))
+    if nav:
+        rows.append(nav)
+
+    tools: list[InlineKeyboardButton] = []
+    if show_examples and kind not in ("reply",):
+        tools.append(InlineKeyboardButton("💡 Examples", callback_data=f"ui:examples:{kind}"))
+    tools.append(InlineKeyboardButton("🔄 Refresh", callback_data=f"ui:refresh:{kind}"))
+    rows.append(tools)
+
+    # Command navigation — compact categories
+    if kind != "reply":
+        if nav_page == 0:
+            rows.append([
+                InlineKeyboardButton("📊 Audit", callback_data="ui:cmd:marketingaudit"),
+                InlineKeyboardButton("🎯 Positioning", callback_data="ui:cmd:positioning"),
+                InlineKeyboardButton("🏆 Competition", callback_data="ui:cmd:competition"),
+            ])
+            rows.append([
+                InlineKeyboardButton("💡 Ideas", callback_data="ui:cmd:suggestmarketing"),
+                InlineKeyboardButton("🌱 Organic", callback_data="ui:cmd:organicmarketing"),
+                InlineKeyboardButton("📋 Proposal", callback_data="ui:cmd:marketingproposals"),
+            ])
+            rows.append([InlineKeyboardButton("▶️ More", callback_data="ui:nav:1")])
+        else:
+            rows.append([
+                InlineKeyboardButton("📈 Funnel", callback_data="ui:cmd:funnels"),
+                InlineKeyboardButton("🚀 Campaigns", callback_data="ui:cmd:campaigns"),
+                InlineKeyboardButton("🤝 Partners", callback_data="ui:cmd:partnerships"),
+            ])
+            rows.append([
+                InlineKeyboardButton("🔎 Gaps", callback_data="ui:cmd:marketgaps"),
+                InlineKeyboardButton("⚡ Opps", callback_data="ui:cmd:opportunities"),
+                InlineKeyboardButton("🪙 $0", callback_data="ui:cmd:zeromarketing"),
+            ])
+            rows.append([InlineKeyboardButton("◀️ Commands", callback_data="ui:nav:0")])
+
+    # Format buttons for proposals
+    if kind in ("marketingproposals", "proposals"):
+        rows.insert(0, [
+            InlineKeyboardButton("📩 Dev DM", callback_data="var:prop:founder_dm"),
+            InlineKeyboardButton("💼 Job pitch", callback_data="var:prop:job"),
+            InlineKeyboardButton("🎯 Short", callback_data="var:prop:short"),
+        ])
+        rows.insert(1, [
+            InlineKeyboardButton("📋 Full", callback_data="var:prop:full"),
+            InlineKeyboardButton("📅 30-day", callback_data="var:prop:30day"),
+            InlineKeyboardButton("🐦 X DM", callback_data="var:prop:x_dm"),
+        ])
+
+    return InlineKeyboardMarkup(rows)
+
+
+async def deliver_ui(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    uid: int,
+    *,
+    kind: str,
+    title: str,
+    body: str,
+    sources=None,
+    edit_message=None,
+    show_examples: bool = True,
+) -> None:
+    """Send or edit a single clean dashboard message."""
+    pages = split_pages(body)
+    sessions = context.application.bot_data.setdefault("sessions", {})
+    sess = sessions.setdefault(uid, {})
+    if sources is not None:
+        sess["sources"] = sources
+    sess["last_kind"] = kind
+    sess["last_text"] = body
+    sess["pages"] = pages
+    sess["page"] = 0
+    sess["nav_page"] = 0
+    sess["title"] = title
+    sess["options"] = intel.extract_options(body)
+
+    page0 = pages[0]
+    header = f"{title}\n" if title else ""
+    if len(pages) > 1:
+        header = f"{title}\nPage 1/{len(pages)}\n" if title else f"Page 1/{len(pages)}\n"
+    text = header + page0
+    kb = ui_keyboard(page=0, total=len(pages), kind=kind, show_examples=show_examples)
+
+    if edit_message is not None:
+        try:
+            await edit_message.edit_text(
+                text[:4096], parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True
+            )
+            sess["msg_id"] = edit_message.message_id
+            sess["chat_id"] = edit_message.chat_id
+            return
+        except Exception as exc:
+            log.warning("edit failed: %s", exc)
+
+    sent = await msg.reply_html(text[:4096], reply_markup=kb, disable_web_page_preview=True)
+    sess["msg_id"] = sent.message_id
+    sess["chat_id"] = sent.chat_id
+
+
+
 def competition_keyboard(session_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 More competitors", callback_data=f"cm:more:{session_id}")],
         [
-            InlineKeyboardButton("🎯 Similar products", callback_data=f"cm:product:{session_id}"),
-            InlineKeyboardButton("🏗️ Architecture", callback_data=f"cm:architecture:{session_id}"),
+            InlineKeyboardButton("◀️ Back", callback_data=f"ui:back:competition"),
+            InlineKeyboardButton("Next ▶️", callback_data=f"ui:next:competition"),
         ],
         [
-            InlineKeyboardButton("🐦 Social leaders", callback_data=f"cm:social:{session_id}"),
+            InlineKeyboardButton("💡 Examples", callback_data=f"ui:examples:competition"),
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"ui:refresh:competition"),
+            InlineKeyboardButton("➕ More", callback_data=f"cm:more:{session_id}"),
+        ],
+        [
+            InlineKeyboardButton("🎯 Product", callback_data=f"cm:product:{session_id}"),
             InlineKeyboardButton("📣 Marketing", callback_data=f"cm:marketing:{session_id}"),
-        ],
-        [
-            InlineKeyboardButton("🌐 UX leaders", callback_data=f"cm:ux:{session_id}"),
-            InlineKeyboardButton("💬 Community", callback_data=f"cm:community:{session_id}"),
-        ],
-        [
-            InlineKeyboardButton("🚀 Growth", callback_data=f"cm:growth:{session_id}"),
             InlineKeyboardButton("📈 Same-stage", callback_data=f"cm:samestage:{session_id}"),
+        ],
+        [
+            InlineKeyboardButton("📊 Audit", callback_data="ui:cmd:marketingaudit"),
+            InlineKeyboardButton("📋 Proposal", callback_data="ui:cmd:marketingproposals"),
+            InlineKeyboardButton("💡 Ideas", callback_data="ui:cmd:suggestmarketing"),
         ],
     ])
 
@@ -173,47 +344,19 @@ async def run_engine(update: Update, context: ContextTypes.DEFAULT_TYPE, args: l
         else:
             text, st = await fn(sources)
 
-    # Remember research for follow-up /reply /proposals /shuffle
-    if update.effective_user:
-        uid = update.effective_user.id
-        sessions = context.application.bot_data.setdefault("sessions", {})
-        sessions[uid] = {
-            "sources": sources,
-            "last_text": text or "",
-            "last_kind": name,
-            "options": intel.extract_options(text or ""),
-        }
-
-    header = (
-        f"📣 <b>{esc(name.upper())}</b>\n"
-        f"Sources: {esc(intel.sources_label(sources))}\n\n"
+    text = intel.scrub_internal(text or "")
+    uid = update.effective_user.id if update.effective_user else 0
+    title = f"📣 <b>{esc(name.upper())}</b>"
+    await deliver_ui(
+        msg,
+        context,
+        uid,
+        kind=name,
+        title=title,
+        body=text,
+        sources=sources,
+        show_examples=name not in ("reply",),
     )
-    body = header + (text or "")
-    # Buttons ONLY on interactive commands — not on strategy dumps
-    interactive = {
-        "marketingproposals", "proposals", "report", "fullpack",
-    }
-    kb = None
-    if name in ("marketingproposals", "proposals"):
-        kb = _action_keyboard("prop")
-    elif name in ("report", "fullpack"):
-        kb = _report_keyboard()
-    if kb:
-        # Single message with keyboard (edit-friendly)
-        if len(body) <= 4000:
-            sent = await msg.reply_html(body, reply_markup=kb)
-        else:
-            await reply_long(msg, body)
-            sent = await msg.reply_html("Navigate:", reply_markup=kb)
-        if update.effective_user:
-            sessions = context.application.bot_data.setdefault("sessions", {})
-            sess = sessions.setdefault(update.effective_user.id, {})
-            sess["msg_id"] = sent.message_id
-            sess["chat_id"] = sent.chat_id
-            sess["last_text"] = text or ""
-            sess["last_kind"] = name
-    else:
-        await reply_long(msg, body)
     try:
         await status.delete()
     except Exception:
@@ -461,13 +604,21 @@ async def cmd_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await status.delete()
     except Exception:
         pass
-    header = (
-        f"🏆 <b>COMPETITION</b> (Web3 · tiered)\n"
-        f"Sources: {esc(intel.sources_label(sources))}\n"
-        f"Batch {len(names)} · session <code>{esc(sid)}</code>\n\n"
+    text = intel.scrub_internal(text or "")
+    sessions = context.application.bot_data.setdefault("sessions", {})
+    sess = sessions.setdefault(update.effective_user.id, {})
+    sess["sources"] = sources
+    sess["shown"] = list(names)
+    sess["comp_sid"] = sid
+    await deliver_ui(
+        msg,
+        context,
+        update.effective_user.id,
+        kind="competition",
+        title="🏆 <b>COMPETITION</b>",
+        body=text,
+        sources=sources,
     )
-    await reply_long(msg, header + (text or ""))
-    await msg.reply_html("More / modes:", reply_markup=competition_keyboard(sid))
 
 
 async def cb_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -504,7 +655,6 @@ async def cb_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         mode = action
         mem["mode"] = mode
     await q.answer("Researching…")
-    status = await q.message.reply_text(f"🔄 mode={mode}…")
     text, st, names = await intel.discover_competitors(
         mem["sources"], mode=mode, exclude=list(mem.get("shown") or []), batch_size=6,
     )
@@ -514,16 +664,22 @@ async def cb_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             shown.append(n)
     mem["shown"] = shown
     await db.save_comp_session(sid, update.effective_user.id, mem["sources"], mode, shown)
-    try:
-        await status.delete()
-    except Exception:
-        pass
-    header = (
-        f"🏆 <b>COMPETITION</b> · {esc(mode)}\n"
-        f"new={len(names)} · shown={len(shown)}\n\n"
+    text = intel.scrub_internal(text or "No further competitors found.")
+    sessions = context.application.bot_data.setdefault("sessions", {})
+    sess = sessions.setdefault(update.effective_user.id, {})
+    sess["sources"] = mem["sources"]
+    sess["shown"] = shown
+    sess["comp_sid"] = sid
+    await deliver_ui(
+        q.message,
+        context,
+        update.effective_user.id,
+        kind="competition",
+        title="🏆 <b>COMPETITION</b>",
+        body=text,
+        sources=mem["sources"],
+        edit_message=q.message,
     )
-    await reply_long(q.message, header + (text or "No further competitors found."))
-    await q.message.reply_html("Continue:", reply_markup=competition_keyboard(sid))
 
 
 async def cmd_competitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -769,6 +925,190 @@ async def cmd_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         pass
     await reply_long(msg, f"🔀 <b>SHUFFLE</b>\n\n{out or ''}")
     await msg.reply_html("Again:", reply_markup=_action_keyboard("gen"))
+
+
+
+async def cb_ui(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Unified Back/Next/Examples/Refresh/Command navigation — always edit message."""
+    q = update.callback_query
+    if not q or not q.data or not update.effective_user:
+        return
+    await q.answer()
+    uid = update.effective_user.id
+    sess = _session(context, uid)
+    parts = q.data.split(":")
+    # ui:back:kind | ui:next:kind | ui:examples:kind | ui:refresh:kind | ui:cmd:name | ui:nav:N | ui:noop
+    action = parts[1] if len(parts) > 1 else "noop"
+    kind = parts[2] if len(parts) > 2 else sess.get("last_kind") or "market"
+
+    if action == "noop":
+        return
+
+    if action == "nav":
+        sess["nav_page"] = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        pages = sess.get("pages") or [sess.get("last_text") or ""]
+        page = int(sess.get("page") or 0)
+        page = max(0, min(page, len(pages) - 1))
+        title = sess.get("title") or ""
+        header = f"{title}\nPage {page + 1}/{len(pages)}\n" if len(pages) > 1 else (title + "\n" if title else "")
+        text = header + pages[page]
+        kb = ui_keyboard(
+            page=page, total=len(pages), kind=sess.get("last_kind") or kind,
+            nav_page=sess.get("nav_page") or 0,
+        )
+        try:
+            await q.message.edit_text(text[:4096], parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+        except Exception as exc:
+            log.warning("nav edit: %s", exc)
+        return
+
+    if action in ("back", "next"):
+        pages = sess.get("pages") or [sess.get("last_text") or ""]
+        page = int(sess.get("page") or 0)
+        if action == "back":
+            page = max(0, page - 1)
+        else:
+            page = min(len(pages) - 1, page + 1)
+        sess["page"] = page
+        title = sess.get("title") or ""
+        header = f"{title}\nPage {page + 1}/{len(pages)}\n" if len(pages) > 1 else (title + "\n" if title else "")
+        text = header + pages[page]
+        kb = ui_keyboard(
+            page=page, total=len(pages), kind=sess.get("last_kind") or kind,
+            nav_page=sess.get("nav_page") or 0,
+        )
+        try:
+            await q.message.edit_text(text[:4096], parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+        except Exception as exc:
+            log.warning("page edit: %s", exc)
+        return
+
+    if action == "examples":
+        sources = sess.get("sources")
+        last = sess.get("last_text") or ""
+        prompt_kind = kind or sess.get("last_kind") or "market"
+        out, st = await intel.complete_fast(
+            f"""{intel.HUMAN_VOICE}
+Generate 💡 EXAMPLES for this project — real execution examples only.
+For each example: What / How / Who / Where / Example outreach or campaign structure /
+Real project + website if known (label ⚠️ if inferred) / What THIS project can adapt.
+3 examples max. No thinking process. No generic "use KOLs" without names/structure.
+PROJECT CONTEXT:
+{intel.evidence_brief(sources) if sources else last[:2500]}
+COMMAND CONTEXT: {prompt_kind}
+""",
+            max_tokens=1600,
+        )
+        out = intel.scrub_internal(out or "No examples available.")
+        title = f"💡 <b>EXAMPLES</b> · {esc(prompt_kind)}"
+        await deliver_ui(
+            q.message, context, uid, kind=prompt_kind, title=title, body=out,
+            sources=sources, edit_message=q.message, show_examples=False,
+        )
+        return
+
+    if action == "refresh":
+        sources = sess.get("sources")
+        if not sources:
+            await q.message.reply_text("Nothing to refresh — run a command with a project first.")
+            return
+        cmd = sess.get("last_kind") or "marketingaudit"
+        # Re-collect if we have parseable sites/handles
+        try:
+            parsed = intel.ParsedInput()
+            for w in (sources.get("websites") or []):
+                if isinstance(w, dict) and w.get("url"):
+                    parsed.websites.append(w["url"])
+            for x in (sources.get("x") or []):
+                if isinstance(x, dict) and x.get("handle"):
+                    parsed.x_handles.append("@" + str(x["handle"]).lstrip("@"))
+            if parsed.websites or parsed.x_handles:
+                sources = await intel.collect_sources(parsed, bot=context.bot)
+        except Exception as exc:
+            log.warning("refresh collect: %s", exc)
+        runners = {
+            "market": intel.run_marketing_audit,
+            "marketingaudit": intel.run_marketing_audit,
+            "positioning": intel.run_positioning,
+            "campaigns": intel.run_campaigns,
+            "marketgaps": intel.run_marketgaps,
+            "opportunities": intel.run_opportunities,
+            "report": intel.run_report,
+            "fullpack": intel.run_report,
+            "funnels": intel.run_funnels,
+            "marketingfunnels": intel.run_funnels,
+            "suggestmarketing": intel.run_suggest_marketing,
+            "marketingideas": intel.run_suggest_marketing,
+            "organicmarketing": intel.run_organic,
+            "zeromarketing": intel.run_zero,
+            "0marketing": intel.run_zero,
+        }
+        if cmd in ("marketingproposals", "proposals"):
+            text, st = await intel.run_marketing_proposals(sources, style="full")
+        elif cmd == "competition":
+            text, st, names = await intel.discover_competitors(sources, mode="similar", exclude=sess.get("shown") or [])
+            sess.setdefault("shown", [])
+            for n in names:
+                if n not in sess["shown"]:
+                    sess["shown"].append(n)
+        else:
+            fn = runners.get(cmd, intel.run_marketing_audit)
+            text, st = await fn(sources)
+        text = intel.scrub_internal(text or "")
+        title = f"📣 <b>{esc(cmd.upper())}</b> · refreshed"
+        await deliver_ui(
+            q.message, context, uid, kind=cmd, title=title, body=text,
+            sources=sources, edit_message=q.message,
+        )
+        return
+
+    if action == "cmd":
+        cmd = parts[2] if len(parts) > 2 else "marketingaudit"
+        sources = sess.get("sources")
+        if not sources:
+            await q.answer("Run a project command first", show_alert=True)
+            return
+        # Switch command using same research
+        runners = {
+            "marketingaudit": intel.run_marketing_audit,
+            "positioning": intel.run_positioning,
+            "campaigns": intel.run_campaigns,
+            "marketgaps": intel.run_marketgaps,
+            "opportunities": intel.run_opportunities,
+            "funnels": intel.run_funnels,
+            "suggestmarketing": intel.run_suggest_marketing,
+            "organicmarketing": intel.run_organic,
+            "zeromarketing": intel.run_zero,
+            "marketingproposals": lambda s: intel.run_marketing_proposals(s, style="full"),
+            "partnerships": getattr(intel, "run_partnerships", intel.run_suggest_marketing),
+        }
+        if cmd == "competition":
+            text, st, names = await intel.discover_competitors(sources, mode="similar", exclude=sess.get("shown") or [])
+            sess.setdefault("shown", [])
+            for n in names:
+                if n not in sess["shown"]:
+                    sess["shown"].append(n)
+            text = intel.scrub_internal(text or "")
+            title = "🏆 <b>COMPETITION</b>"
+            await deliver_ui(
+                q.message, context, uid, kind="competition", title=title, body=text,
+                sources=sources, edit_message=q.message,
+            )
+            return
+        fn = runners.get(cmd)
+        if not fn:
+            await q.answer("Unknown", show_alert=True)
+            return
+        result = await fn(sources)
+        text, st = result[0], result[1]
+        text = intel.scrub_internal(text or "")
+        title = f"📣 <b>{esc(cmd.upper())}</b>"
+        await deliver_ui(
+            q.message, context, uid, kind=cmd, title=title, body=text,
+            sources=sources, edit_message=q.message,
+        )
+        return
+
 
 
 async def cb_variations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1048,6 +1388,7 @@ def main() -> None:
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("alerts", cmd_alerts))
     app.add_handler(CallbackQueryHandler(cb_competition, pattern=r"^cm:"))
+    app.add_handler(CallbackQueryHandler(cb_ui, pattern=r"^ui:"))
     app.add_handler(CallbackQueryHandler(cb_variations, pattern=r"^var:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 

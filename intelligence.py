@@ -21,20 +21,11 @@ log = logging.getLogger("mkt.intel")
 # AI
 # ---------------------------------------------------------------------------
 
-SYSTEM = """You are an elite Web3 marketing strategist, growth analyst, and competitive intelligence advisor.
-
-HARD RULES:
-1. Always move: CURRENT STATE → DIAGNOSIS → RECOMMENDATION → EXECUTION → WHY.
-2. Reject generic advice that fits 100 random projects. Be specific to THIS evidence.
-3. Never invent X posts, follower counts, Telegram activity, campaigns, partnerships, or product features.
-4. If a source was unavailable, note it briefly and continue with other evidence.
-5. No price promises or guaranteed returns. Distinguish FACT vs INFERENCE vs RECOMMENDATION.
-6. Telegram-mobile format: clear sections, bullets, emoji ONLY on section headings.
-7. Competitors MUST be real crypto/Web3 projects only — never Web2 SaaS or generic brands.
-8. Do not invent competitor social accounts. Say "Not found / not publicly verified" when unknown.
-9. Tier competitors: TOP-TIER BENCHMARKS / ESTABLISHED / MID-TIER GROWING / EMERGING SAME-STAGE.
-   Explain WHY each tier. Same-stage projects are often more useful than only listing Uniswap-scale giants.
-10. Recommendations must say WHAT / HOW / FOR WHOM / WHERE — not "improve marketing".
+SYSTEM = """You are an elite Web3 marketing strategist and growth analyst.
+Never expose internal planning, step lists, or "thinking process".
+Never invent metrics, followers, partnerships, campaigns, or competitors.
+Never speak as the project. Default user role: external marketer/observer.
+Output finished intelligence only — Telegram-readable, human, specific.
 """
 
 GATE = """
@@ -74,6 +65,25 @@ What they do (factual)
 What to study / What NOT to copy
 Source / ⚠️ INFERRED if not verified
 """
+
+
+
+def scrub_internal(text: str) -> str:
+    """Remove leaked chain-of-thought / session metadata from model output."""
+    if not text:
+        return text or ""
+    import re as _re
+    # Drop "thinking process" blocks
+    text = _re.sub(
+        r"(?is)here'?s? a thinking process:.*?(?=\n🏆|\n📊|\n📣|\n🎯|\n⚡|\n🔎|$)",
+        "",
+        text,
+    )
+    text = _re.sub(r"(?im)^\s*(batch\s*\d+|session\s+[a-f0-9]+|user safety:.*|ai shortlist.*|best-effort.*)\s*$", "", text)
+    text = _re.sub(r"(?im)^\s*(new=\d+\s*·\s*shown=\d+|sources:\s*web)\s*$", "", text)
+    text = _re.sub(r"(?im)^\s*\d+\.\s*Analyze the .+\s*$", "", text)
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 LAST_AI_ERROR: str = ""
@@ -174,7 +184,7 @@ async def complete(prompt: str, *, max_tokens: int = 2200) -> tuple[str | None, 
             log.info("AI attempt %s model=%s status=%s detail=%s", name, mid, status, detail[:120])
             if text:
                 LAST_AI_ERROR = ""
-                return text, f"ok:{name}:{mid}"
+                return scrub_internal(text), f"ok:{name}:{mid}"
             # Only recover once on model-not-found; other errors → next provider
             if status != "AI_MODEL_ERROR":
                 break
@@ -1186,22 +1196,29 @@ SUBJECT:
 ALREADY SHOWN (do not repeat names/aliases/URLs):
 {exclude if exclude else "(none)"}
 
-Return {batch_size} NEW real Web3 competitors.
-MUST include mix of tiers when possible — do NOT only list Uniswap-scale giants.
-Prefer at least 2 🟡 EMERGING/SAME-STAGE or 🟢 MID-TIER when mode allows.
+Return up to {batch_size} NEW candidates only if genuinely comparable.
+Zero is valid if none pass the relevance test.
+Do NOT invent bird-themed tokens or keyword matches.
+Do NOT include subject project itself.
 
-Template per competitor:
-🏆 [Name] — tier emoji
-Confidence · Research status
-Why comparable · Website · X · Telegram · Chain
-Stronger at (dimension) · Learn · Adapt · Don't copy
+Template per competitor (clean user output — no session/batch/safety metadata):
+🏆 NAME
+Type: Direct / Indirect / Attention benchmark / Marketing benchmark
+Why it matters: 1–2 specific sentences
+🌐 Website: https://... (required if known, else Not publicly verified)
+𝕏 X: @handle or Not publicly verified
+Community: Telegram/Discord if verified, else Not publicly verified
+What they do: short factual
+What to study: specific
+What NOT to copy: specific
 
-Then: 📋 3 NEXT ACTIONS for subject
+Then if useful: 👉 What subject can adapt
 Final line only: NAMES: name1 | name2 | ...
 """
     text, st = await complete(prompt, max_tokens=3800)
+    text = scrub_internal(text or "")
     if not text:
-        return _fallback("competition", sources, st), st, []
+        return scrub_internal(_fallback("competition", sources, st)), st, []
 
     urls = re.findall(r"https?://[^\s\)\]\>]+", text)
     notes = []
@@ -1236,6 +1253,17 @@ Final line only: NAMES: name1 | name2 | ...
 # ---------------------------------------------------------------------------
 
 HUMAN_VOICE = """
+HUMAN VOICE — NON-NEGOTIABLE.
+Sound like a real marketer who looked at THIS project.
+Ban: "I believe", "I'm excited", "strong opportunity", "leverage", "maximize", "unlock",
+"drive engagement", "increase visibility", "build brand awareness", "strategic partnerships",
+"robust community", "in today's competitive landscape", "take it to the next level",
+"I would recommend", "the project should consider", "this presents an excellent opportunity",
+"by leveraging", "to maximize", "synergy", "game-changing", "high-impact", "seamlessly".
+Prefer: "I'd test…", "I'd leave alone…", "Honestly I wouldn't…", "The interesting part is…",
+"If this were mine…", "I'd start here…".
+Never show thinking process / numbered internal steps / "Analyze the Request".
+
 Write like a sharp human Web3 marketer who looked at THIS project — not corporate AI.
 Ban: "excellent opportunity", "leverage", "in today's landscape", "significantly enhance",
 "maximize growth", "robust strategy", "drive engagement", "build awareness", "foster community".
