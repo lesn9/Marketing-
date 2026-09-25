@@ -68,6 +68,13 @@ Label AI-memory-only picks: ⚠️ INFERRED CANDIDATE
 
 LAST_AI_ERROR: str = ""
 
+# Skip known-dead Groq model ids immediately
+_DEAD_MODELS = {
+    "llama-3.1-70b-versatile",
+    "llama-3.1-70b",
+    "mixtral-8x7b-32768",
+}
+
 
 def _any_ai_key() -> bool:
     return bool(
@@ -80,76 +87,90 @@ def _any_ai_key() -> bool:
     )
 
 
-async def complete(prompt: str, *, max_tokens: int = 3200) -> tuple[str | None, str]:
-    """Try all configured providers in order. Returns (text, status)."""
+async def complete(prompt: str, *, max_tokens: int = 2200) -> tuple[str | None, str]:
+    """Fast multi-provider AI. Few live models, short timeout, skip dead ids."""
     global LAST_AI_ERROR
     errors: list[str] = []
-    mt = min(max_tokens, 2800)
+    mt = min(max_tokens, 2000)
+    prompt = (prompt or "")[:22000]
 
-    groq_models = [
-        "llama-3.1-8b-instant",
-        config.GROQ_MODEL,
-        "llama-3.3-70b-versatile",
-        "gemma2-9b-it",
-        "llama-3.1-70b-versatile",
-    ]
-    or_models = [
-        "openrouter/auto",
+    # Current live models only (as of 2026) — max 2 tries per provider
+    groq_models = []
+    for m in [config.GROQ_MODEL, "llama-3.1-8b-instant", "llama-3.3-70b-versatile", "gemma2-9b-it"]:
+        if m and m not in _DEAD_MODELS and m not in groq_models:
+            groq_models.append(m)
+    groq_models = groq_models[:2]
+
+    cerebras_models = []
+    for m in [config.CEREBRAS_MODEL, "llama3.1-8b", "llama-3.3-70b"]:
+        if m and m not in cerebras_models:
+            cerebras_models.append(m)
+    cerebras_models = cerebras_models[:2]
+
+    gemini_models = []
+    for m in [config.GEMINI_MODEL, "gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]:
+        if m and m not in gemini_models:
+            gemini_models.append(m)
+    gemini_models = gemini_models[:2]
+
+    or_models = []
+    for m in [
         config.OPENROUTER_MODEL,
+        "openrouter/auto",
         "google/gemma-2-9b-it:free",
         "meta-llama/llama-3.2-3b-instruct:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "mistralai/mistral-7b-instruct:free",
         "qwen/qwen-2.5-7b-instruct:free",
-    ]
+    ]:
+        if m and m not in or_models:
+            or_models.append(m)
+    or_models = or_models[:2]
+
     or_extra = {
         "HTTP-Referer": "https://github.com/web3-marketing-intel",
         "X-Title": "Web3 Marketing Intelligence",
     }
 
-    providers: list[tuple[str, str, list[str], dict | None]] = []
+    # Prefer fast providers first
+    chain: list[tuple[str, object]] = []
     if config.GROQ_API_KEY:
-        providers.append(("groq", config.GROQ_API_KEY, groq_models, None))
+        chain.append(("groq", (config.GROQ_API_KEY, groq_models)))
     if config.GROQ_API_KEY_2:
-        providers.append(("groq2", config.GROQ_API_KEY_2, groq_models, None))
-    if config.CEREBRAS_API_KEY:
-        providers.append((
-            "cerebras",
-            config.CEREBRAS_API_KEY,
-            [config.CEREBRAS_MODEL, "llama-3.3-70b", "llama3.1-8b"],
-            None,
-        ))
+        chain.append(("groq2", (config.GROQ_API_KEY_2, groq_models)))
     if config.GEMINI_API_KEY:
-        providers.append((
-            "gemini",
-            config.GEMINI_API_KEY,
-            [config.GEMINI_MODEL, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
-            None,
-        ))
+        chain.append(("gemini", (config.GEMINI_API_KEY, gemini_models)))
+    if config.CEREBRAS_API_KEY:
+        chain.append(("cerebras", (config.CEREBRAS_API_KEY, cerebras_models)))
     if config.OPENROUTER_API_KEY:
-        providers.append(("openrouter", config.OPENROUTER_API_KEY, or_models, or_extra))
+        chain.append(("openrouter", (config.OPENROUTER_API_KEY, or_models)))
     if config.OPENROUTER_API_KEY_2:
-        providers.append(("openrouter2", config.OPENROUTER_API_KEY_2, or_models, or_extra))
+        chain.append(("openrouter2", (config.OPENROUTER_API_KEY_2, or_models)))
 
-    if not providers:
+    if not chain:
         LAST_AI_ERROR = "no keys"
         return None, "AI_NOT_CONFIGURED"
 
-    for name, key, models, extra in providers:
+    for name, payload in chain:
+        key, models = payload  # type: ignore
         if name.startswith("groq"):
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            text, status, detail = await _chat(url, key, models, prompt, mt, extra=extra)
+            text, status, detail = await _chat(
+                "https://api.groq.com/openai/v1/chat/completions",
+                key, models, prompt, mt,
+            )
         elif name == "cerebras":
-            url = "https://api.cerebras.ai/v1/chat/completions"
-            text, status, detail = await _chat(url, key, models, prompt, mt, extra=extra)
+            text, status, detail = await _chat(
+                "https://api.cerebras.ai/v1/chat/completions",
+                key, models, prompt, mt,
+            )
         elif name == "gemini":
             text, status, detail = await _gemini_chat(key, models, prompt, mt)
         else:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            text, status, detail = await _chat(url, key, models, prompt, mt, extra=extra)
+            text, status, detail = await _chat(
+                "https://openrouter.ai/api/v1/chat/completions",
+                key, models, prompt, mt, extra=or_extra,
+            )
         if text:
             LAST_AI_ERROR = ""
-            return text, f"{status}+{name}" if status == "ok" else status
+            return text, f"ok:{name}"
         errors.append(f"{name}:{status}:{detail}")
 
     LAST_AI_ERROR = " | ".join(errors)[:500]
@@ -166,56 +187,68 @@ async def complete(prompt: str, *, max_tokens: int = 3200) -> tuple[str | None, 
 async def _gemini_chat(
     key: str, models: list[str], prompt: str, max_tokens: int
 ) -> tuple[str | None, str, str]:
-    """Gemini via OpenAI-compatible endpoint."""
-    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    """Gemini native generateContent (more reliable than OpenAI-compat)."""
     last = ""
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            seen = set()
-            for model in models:
-                if not model or model in seen:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            for model in models[:2]:
+                if not model:
                     continue
-                seen.add(model)
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model}:generateContent?key={key.strip()}"
+                )
                 try:
                     resp = await client.post(
                         url,
-                        headers={
-                            "Authorization": f"Bearer {key.strip()}",
-                            "Content-Type": "application/json",
-                        },
+                        headers={"Content-Type": "application/json"},
                         json={
-                            "model": model,
-                            "temperature": 0.45,
-                            "max_tokens": max_tokens,
-                            "messages": [
+                            "contents": [
                                 {
-                                    "role": "system",
-                                    "content": "You are a Web3 marketing strategist. Be specific and evidence-based.",
-                                },
-                                {"role": "user", "content": prompt[:28000]},
+                                    "role": "user",
+                                    "parts": [
+                                        {
+                                            "text": (
+                                                "You are a Web3 marketing strategist. "
+                                                "Be specific and evidence-based.\n\n" + prompt
+                                            )[:30000]
+                                        }
+                                    ],
+                                }
                             ],
+                            "generationConfig": {
+                                "temperature": 0.45,
+                                "maxOutputTokens": max_tokens,
+                            },
                         },
                     )
-                    if resp.status_code == 429:
-                        last = f"{model}:429"
-                        return None, "AI_RATE_LIMITED", last
-                    if resp.status_code in (401, 403):
-                        last = f"{model}:{resp.status_code}"
-                        return None, "AI_AUTH_FAILED", last
-                    if resp.status_code >= 400:
-                        last = f"{model}:{resp.status_code}:{resp.text[:120]}"
-                        continue
-                    data = resp.json()
-                    content = (
-                        ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-                        or ""
-                    ).strip()
-                    if content:
-                        return content, "ok", model
-                    last = f"{model}:empty"
+                except httpx.TimeoutException:
+                    return None, "AI_TIMEOUT", f"{model}:timeout"
                 except Exception as exc:
                     last = f"{model}:{exc}"
                     continue
+                if resp.status_code == 429:
+                    return None, "AI_RATE_LIMITED", f"{model}:429"
+                if resp.status_code in (401, 403):
+                    return None, "AI_AUTH_FAILED", f"{model}:{resp.status_code}"
+                if resp.status_code >= 400:
+                    last = f"{model}:{resp.status_code}:{(resp.text or '')[:100]}"
+                    continue
+                data = resp.json() if resp.content else {}
+                try:
+                    parts = (
+                        ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
+                        or []
+                    )
+                    content = "".join(
+                        (p.get("text") or "") for p in parts if isinstance(p, dict)
+                    ).strip()
+                except Exception as exc:
+                    last = f"{model}:parse:{exc}"
+                    continue
+                if content:
+                    return content, "ok", model
+                last = f"{model}:empty"
     except Exception as exc:
         return None, "AI_PROVIDER_ERROR", str(exc)[:120]
     return None, "AI_PROVIDER_ERROR", last
@@ -237,10 +270,10 @@ async def _chat(
         headers.update(extra)
     last_detail = ""
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            seen = set()
-            for model in models:
-                if not model or model in seen:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            seen: set[str] = set()
+            for model in models[:2]:
+                if not model or model in seen or model in _DEAD_MODELS:
                     continue
                 seen.add(model)
                 try:
@@ -253,34 +286,44 @@ async def _chat(
                             "max_tokens": max_tokens,
                             "messages": [
                                 {"role": "system", "content": SYSTEM},
-                                {"role": "user", "content": prompt},
+                                {"role": "user", "content": prompt[:22000]},
                             ],
                         },
                     )
                 except httpx.TimeoutException:
-                    return None, "AI_TIMEOUT", "timeout"
+                    last_detail = f"{model}:timeout"
+                    continue
                 except Exception as exc:
-                    last_detail = str(exc)[:120]
+                    last_detail = f"{model}:{exc}"
                     continue
                 if resp.status_code == 401:
                     return None, "AI_AUTH_FAILED", "401"
                 if resp.status_code == 429:
-                    last_detail = "429"
-                    continue  # try next model
+                    last_detail = f"{model}:429"
+                    continue
                 if resp.status_code >= 400:
-                    last_detail = f"{resp.status_code}:{(resp.text or '')[:120]}"
+                    last_detail = f"{resp.status_code}:{(resp.text or '')[:100]}"
                     log.warning("AI model %s failed: %s", model, last_detail)
                     continue
-                data = resp.json()
-                text = (
-                    (data.get("choices") or [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    .strip()
-                )
+                try:
+                    data = resp.json() if resp.content else {}
+                except Exception:
+                    last_detail = f"{model}:bad_json"
+                    continue
+                choices = data.get("choices") if isinstance(data, dict) else None
+                if not choices:
+                    last_detail = f"{model}:no_choices"
+                    continue
+                msg = (choices[0] or {}).get("message") or {}
+                text = (msg.get("content") or "").strip()
+                if isinstance(text, list):
+                    # Some providers return content parts
+                    text = "".join(
+                        (p.get("text") if isinstance(p, dict) else str(p)) for p in text
+                    ).strip()
                 if text:
                     return text, "AI_SUCCESS", model
-                last_detail = "empty content"
+                last_detail = f"{model}:empty"
     except Exception as exc:
         return None, "AI_PROVIDER_ERROR", str(exc)[:120]
     return None, "AI_MODEL_ERROR", last_detail
@@ -820,7 +863,7 @@ PROJECT / CATEGORY / MARKET / CURRENT POSITION (label inferences)
 
 Every major block: CURRENT → DIAGNOSIS → RECOMMENDATION → EXECUTION → WHY.
 """
-    text, st = await complete(prompt, max_tokens=4500)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("marketingaudit", sources, st), st
 
 
@@ -843,7 +886,7 @@ Answer:
 - Messaging pillars
 - Homepage headline · X bio · pinned post · elevator pitch · CTA examples
 """
-    text, st = await complete(prompt, max_tokens=2800)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("positioning", sources, st), st
 
 
@@ -868,7 +911,7 @@ For each stage:
 Do not force one generic funnel on every project type.
 End with top 5 funnel fixes prioritized.
 """
-    text, st = await complete(prompt, max_tokens=3000)
+    text, st = await complete(prompt, max_tokens=2200)
     return text or _fallback("funnels", sources, st), st
 
 
@@ -931,7 +974,7 @@ Output:
 Then 3–4 ideas each with full proof block above.
 No generic influencer/post-more advice. No fabricated case studies.
 """
-    text, st = await complete(prompt, max_tokens=3400)
+    text, st = await complete(prompt, max_tokens=2400)
     return text or _fallback("suggestmarketing", sources, st), st
 
 
@@ -986,7 +1029,7 @@ Cover: X organic, content loops, community loops, founder-led, product-led, educ
 recurring series, partnerships, UGC, ambassadors, Spaces, ecosystem participation.
 Concrete plan with weekly rhythm examples. Project-specific only.
 """
-    text, st = await complete(prompt, max_tokens=2800)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("organic", sources, st), st
 
 
@@ -1017,7 +1060,7 @@ Existing campaigns only if evidenced.
 Propose 3 campaigns. Each: name, objective, audience, concept, mechanism, message,
 X / TG / community / creator execution, assets, CTA, timeline, measurement, why it fits.
 """
-    text, st = await complete(prompt, max_tokens=2800)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("campaigns", sources, st), st
 
 
@@ -1063,7 +1106,7 @@ Value prop · Audience · X · Community · Website/conversion · Funnel snapsho
 Competitive tiers (brief) · Gaps · Opportunities · Organic + $0 highlights · Content pillars ·
 Action plan NOW/NEXT/LATER with concrete actions and examples.
 """
-    text, st = await complete(prompt, max_tokens=4500)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("report", sources, st), st
 
 
@@ -1081,7 +1124,7 @@ Dimensions: Positioning, Product, Website/UX, Messaging, X, Content, Community, 
 Campaigns, Acquisition, Funnel, Audience, Differentiation, Growth.
 End with WHAT A LEARNS FROM B and WHAT B LEARNS FROM A (concrete adaptations).
 """
-    text, st = await complete(prompt, max_tokens=3200)
+    text, st = await complete(prompt, max_tokens=2200)
     return text or "Compare failed — AI unavailable.", st
 
 
@@ -1099,7 +1142,7 @@ What it is, tier, marketing mechanisms (not just "strong brand"),
 what works and WHY, what subject can adapt at its stage, what NOT to copy,
 3 concrete tests. Provide Website/X/TG if known or "Not found / not publicly verified".
 """
-    text, st = await complete(prompt, max_tokens=2800)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("competitor", sources, st), st
 
 
