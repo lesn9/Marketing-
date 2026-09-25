@@ -38,31 +38,41 @@ HARD RULES:
 """
 
 GATE = """
-QUALITY GATE before you finish:
-- Did I diagnose a real issue (not just describe)?
-- Is every recommendation specific to THIS project type, stage, and evidence?
-- Did I give execution examples (posts, CTAs, campaign mechanics)?
-- For competitors: did I separate top-tier benchmarks from same-stage growth lessons?
-If any answer is no, improve the answer.
+QUALITY GATE:
+- Research-backed only. Never invent followers, TG members, partnerships, metrics, or product claims.
+- FACT vs INFERENCE: label inferences. Missing data = UNAVAILABLE, not "inactive".
+- User is EXTERNAL (outside the project) unless they explicitly say otherwise. Never speak AS the project.
+- Project-specific: if a line could apply to any Web3 project, rewrite it.
+- Telegram-native: short blocks, no markdown tables, no giant numbered lists, no corporate AI phrases
+  ("leverage", "maximize", "in today's landscape", "excellent opportunity").
+- Prefer 3–4 priorities over dumping every channel/tactic.
 """
 
 COMPETITOR_RULES = """
-CRYPTO/WEB3 COMPETITORS ONLY.
-Never Web2 companies.
+COMPETITORS — relevance first, not keywords.
 
-Tiers (required):
-🔵 TOP-TIER BENCHMARKS — category leaders (useful for brand/UX/distribution lessons; not always copyable at small scale)
-🟣 ESTABLISHED COMPARABLES — meaningful market presence, relevant product
-🟢 MID-TIER / GROWING — growing projects with transferable tactics
-🟡 EMERGING / SAME-STAGE — newer projects whose growth moves may be realistic to adapt
+A candidate is a competitor ONLY if someone interested in THIS project might reasonably
+consider the other instead (same product need, audience, behavior, or narrative space).
 
-For each competitor:
-🏷️ Project | Confidence 🟢/🟡/⚠️ | Research status
-🌐 Website | 🐦 X | 💬 Telegram | ⛓️ Chain
-Why comparable | What appears stronger (dimension-specific)
-What subject can learn | How to adapt | What NOT to copy
+NOT enough: both Web3, both AI, both have tokens, both have Telegram, both "gaming".
 
-Label AI-memory-only picks: ⚠️ INFERRED CANDIDATE
+Categories (do not mix):
+DIRECT — meaningful product/use-case overlap
+INDIRECT — different product, same attention/audience/narrative
+ATTENTION BENCHMARK — not a competitor; useful attention comparison
+MARKETING BENCHMARK — tactic study only
+ECOSYSTEM COMPARABLE — structural, not competitive
+
+Zero direct competitors is VALID. Never force 4 names.
+Never include the subject project itself.
+Never recycle Golem/Render/Chainlink/Ankr/Ocean unless research shows real fit.
+
+For each kept candidate:
+Why comparable (1–2 specific sentences)
+Overlap dimensions
+What they do (factual)
+What to study / What NOT to copy
+Source / ⚠️ INFERRED if not verified
 """
 
 
@@ -792,7 +802,16 @@ async def run_marketing_audit(sources: dict[str, Any]) -> tuple[str, str]:
 {HUMAN_VOICE}
 {PARTNERSHIP_RULES}
 
-Produce a full MARKETING INTELLIGENCE AUDIT for this Web3 project.
+Produce a MARKETING AUDIT for this project (Telegram-readable).
+
+Start with:
+⚡ QUICK TAKE
+
+Then only sections you have evidence for:
+CURRENT STATE · WHAT'S WORKING · MAIN GAPS · PRIORITIES (max 4) · DO THIS FIRST
+
+No markdown tables. No dumping every channel. No inventing social metrics.
+Missing source data = UNAVAILABLE. User is external observer.
 
 EVIDENCE:
 {evidence_brief(sources)}
@@ -997,7 +1016,16 @@ Never invent existing relationships. Prefer partner types unless a name is in ev
 
 async def run_organic(sources: dict[str, Any]) -> tuple[str, str]:
     prompt = f"""{GATE}
-ORGANIC growth plan for this specific project (minimal paid ads).
+ORGANIC growth for THIS project only (minimal paid).
+
+Telegram format:
+⚡ QUICK TAKE (1–3 sentences)
+🔎 CURRENT STATE (short bullets of verified observations only)
+🎯 MAIN GAPS (3 max)
+🚀 WHAT I WOULD DO (3–4 priorities: TITLE / What / Why / How)
+👉 DO THIS FIRST (one action)
+No markdown tables. No generic "post more / host AMA / use KOLs" without project-specific why.
+If X/TG activity was not verified, say UNAVAILABLE — do not call it inactive.
 
 EVIDENCE:
 {evidence_brief(sources)}
@@ -1208,12 +1236,20 @@ Final line only: NAMES: name1 | name2 | ...
 # ---------------------------------------------------------------------------
 
 HUMAN_VOICE = """
-Write like a sharp human who knows Web3 marketing — not corporate AI.
+Write like a sharp human Web3 marketer who looked at THIS project — not corporate AI.
 Ban: "excellent opportunity", "leverage", "in today's landscape", "significantly enhance",
-"I would recommend implementing", "it is important to note", "maximize growth and engagement".
-Prefer natural lines: "One thing I'd test…", "You could turn this into…", "Honestly I'd lean into…"
-Vary sentence length. Be specific to the evidence. No invented metrics.
-Default: give 3–4 DISTINCT options (different angle/structure), not synonym rewrites.
+"maximize growth", "robust strategy", "drive engagement", "build awareness", "foster community".
+Prefer: "One thing I'd test…", "I'd lean into…", "Honestly I'd…", "There's a gap between…"
+
+ROLE DEFAULT: user is OUTSIDE the project (external marketer / observer).
+Never speak as the project ("Join our…", "We're launching…").
+Never assume user is a customer, investor, partner, or employee unless they say so.
+
+USER POV = knowledgeable outsider raising a useful observation to the team.
+MARKETER POV = external marketer pointing at a growth opportunity.
+DEV DM = outreach about marketing/growth — NOT "I want to use your product".
+JOB PITCH = only when explicitly requested.
+X REPLY = something that fits under a project post.
 """
 
 PARTNERSHIP_RULES = """
@@ -1286,39 +1322,54 @@ async def run_reply_assistant(
     perspective: str = "",
     prior_options: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Conversational marketing reply / idea generator."""
-    evidence = evidence_brief(sources) if sources else "(no project research in session — answer from user text only)"
+    """Generate actual sendable replies — NEVER a marketing audit."""
+    evidence = evidence_brief(sources) if sources else "(no project research — answer from user text only)"
+    # Cap evidence so model cannot expand into a full audit
+    if len(evidence) > 1800:
+        evidence = evidence[:1800] + "\n…(truncated)"
     prior = prior_options or []
-    prompt = f"""{GATE}
-{HUMAN_VOICE}
+    mode_map = {
+        "auto": "Infer: direct reply / X reply / community / founder DM / marketing observation",
+        "x_reply": "X REPLY only — short text for under a project post",
+        "community": "COMMUNITY REPLY — natural TG/Discord message",
+        "dev_dm": "FOUNDER/DEV DM — marketing/growth outreach, not product-usage request",
+        "observation": "Short marketing observation the user can drop in chat",
+        "job": "Service/job pitch — only this mode may sell the user's marketing help",
+        "reply": "Natural conversational reply to what was said",
+    }
+    prompt = f"""{HUMAN_VOICE}
 
-You are a conversational marketing assistant for Web3.
+TASK: /reply — conversational RESPONSE generator.
+You write messages the user can SEND or POST.
+You do NOT write marketing audits, competitor lists, CURRENT STATE, DIAGNOSIS, EXECUTION, WHY sections, or weekly plans.
 
-USER REQUEST:
+USER REQUEST / MESSAGE TO RESPOND TO:
 {user_request}
 
-MODE HINT: {mode}
+MODE: {mode} — {mode_map.get(mode, mode)}
 TONE: {tone or "natural"}
-PERSPECTIVE: {perspective or "default"}
+PERSPECTIVE: {perspective or "external outsider"}
 
-PROJECT EVIDENCE (may be empty):
+OPTIONAL PROJECT CONTEXT (use only if it helps the reply; do not expand into research):
 {evidence}
 
-ALREADY USED OPTIONS (do not repeat wording or same angle):
-{prior[:8] if prior else "(none)"}
+AVOID repeating these prior options:
+{prior[:6] if prior else "(none)"}
 
-Rules:
-- If user wants a quick idea for a DM/dev chat → 3–4 short, precise options.
-- If user pastes someone else's message → suggest replies that respond to WHAT THEY SAID.
-- Distinguish: (A) useful contribution (B) team suggestion (C) service pitch — only do C if asked.
-- Do NOT sound like you're job-hunting unless user asks to pitch services.
-- Keep each option tight. Label Option 1 / 2 / 3 (and 4 if useful).
-- Different structure per option (direct / conversational / strategic or other).
+OUTPUT RULES:
+- 2–3 options max. Each option = 1–4 sentences.
+- Label: Option 1 / Option 2 / Option 3
+- Respond to WHAT WAS SAID or answer the user's ask directly.
+- External marketer/observer by default — never speak as the project.
+- No tables, no competitor tiering, no "CURRENT STATE".
+- If mode is x_reply: write under-the-post style only.
+- If mode is dev_dm: founder outreach about a marketing/growth idea.
+- If mode is job: only then position user as offering marketing help.
 """
-    text, st = await complete_fast(prompt, max_tokens=1600)
+    text, st = await complete_fast(prompt, max_tokens=900)
     if not text:
         return (
-            f"⚠️ AI unavailable ({st}). Try again in a minute.\nDetail: {LAST_AI_ERROR[:200]}",
+            f"⚠️ AI unavailable ({st}). Retry shortly.\n{LAST_AI_ERROR[:180]}",
             st,
         )
     return text, st

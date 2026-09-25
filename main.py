@@ -186,17 +186,34 @@ async def run_engine(update: Update, context: ContextTypes.DEFAULT_TYPE, args: l
 
     header = (
         f"📣 <b>{esc(name.upper())}</b>\n"
-        f"Sources: {esc(intel.sources_label(sources))}\n"
-        f"AI: {esc(st)}\n\n"
+        f"Sources: {esc(intel.sources_label(sources))}\n\n"
     )
-    await reply_long(msg, header + (text or ""))
-    if name in ("suggestmarketing", "marketingideas"):
-        kb = _suggest_keyboard()
-    elif name in ("marketingproposals", "proposals"):
+    body = header + (text or "")
+    # Buttons ONLY on interactive commands — not on strategy dumps
+    interactive = {
+        "marketingproposals", "proposals", "report", "fullpack",
+    }
+    kb = None
+    if name in ("marketingproposals", "proposals"):
         kb = _action_keyboard("prop")
+    elif name in ("report", "fullpack"):
+        kb = _report_keyboard()
+    if kb:
+        # Single message with keyboard (edit-friendly)
+        if len(body) <= 4000:
+            sent = await msg.reply_html(body, reply_markup=kb)
+        else:
+            await reply_long(msg, body)
+            sent = await msg.reply_html("Navigate:", reply_markup=kb)
+        if update.effective_user:
+            sessions = context.application.bot_data.setdefault("sessions", {})
+            sess = sessions.setdefault(update.effective_user.id, {})
+            sess["msg_id"] = sent.message_id
+            sess["chat_id"] = sent.chat_id
+            sess["last_text"] = text or ""
+            sess["last_kind"] = name
     else:
-        kb = _action_keyboard("gen")
-    await msg.reply_html("Refine:", reply_markup=kb)
+        await reply_long(msg, body)
     try:
         await status.delete()
     except Exception:
@@ -223,19 +240,39 @@ def _action_keyboard(kind: str = "gen") -> InlineKeyboardMarkup:
         ])
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔀 More variations", callback_data="var:shuffle"),
-            InlineKeyboardButton("🎯 Direct", callback_data="var:tone:direct"),
-            InlineKeyboardButton("💬 Casual", callback_data="var:tone:casual"),
+            InlineKeyboardButton("🔀 More", callback_data="var:shuffle"),
+            InlineKeyboardButton("📩 Founder DM", callback_data="var:prop:founder_dm"),
+            InlineKeyboardButton("💼 Job pitch", callback_data="var:prop:job"),
         ],
+    ])
+
+
+def _reply_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🧠 Strategic", callback_data="var:tone:strategic"),
-            InlineKeyboardButton("👤 User POV", callback_data="var:pov:user"),
-            InlineKeyboardButton("📣 Marketer", callback_data="var:pov:marketer"),
+            InlineKeyboardButton("💬 Reply", callback_data="var:fmt:reply"),
+            InlineKeyboardButton("🐦 X Reply", callback_data="var:fmt:x_reply"),
+            InlineKeyboardButton("👥 Community", callback_data="var:fmt:community"),
         ],
         [
             InlineKeyboardButton("📩 Dev DM", callback_data="var:fmt:dev_dm"),
-            InlineKeyboardButton("🐦 X reply", callback_data="var:fmt:x_reply"),
-            InlineKeyboardButton("🤝 Partnerships", callback_data="var:part:ideas"),
+            InlineKeyboardButton("📣 Observation", callback_data="var:fmt:observation"),
+            InlineKeyboardButton("🔀 More", callback_data="var:shuffle"),
+        ],
+    ])
+
+
+def _report_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Overview", callback_data="var:rep:overview"),
+            InlineKeyboardButton("🎯 Positioning", callback_data="var:rep:positioning"),
+            InlineKeyboardButton("📣 Content", callback_data="var:rep:content"),
+        ],
+        [
+            InlineKeyboardButton("👥 Community", callback_data="var:rep:community"),
+            InlineKeyboardButton("🤝 Partners", callback_data="var:rep:partners"),
+            InlineKeyboardButton("🚀 Opportunities", callback_data="var:rep:opportunities"),
         ],
     ])
 
@@ -426,7 +463,7 @@ async def cmd_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pass
     header = (
         f"🏆 <b>COMPETITION</b> (Web3 · tiered)\n"
-        f"Sources: {esc(intel.sources_label(sources))}\nAI: {esc(st)}\n"
+        f"Sources: {esc(intel.sources_label(sources))}\n"
         f"Batch {len(names)} · session <code>{esc(sid)}</code>\n\n"
     )
     await reply_long(msg, header + (text or ""))
@@ -483,7 +520,7 @@ async def cb_competition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         pass
     header = (
         f"🏆 <b>COMPETITION</b> · {esc(mode)}\n"
-        f"AI: {esc(st)} · new={len(names)} · shown={len(shown)}\n\n"
+        f"new={len(names)} · shown={len(shown)}\n\n"
     )
     await reply_long(q.message, header + (text or "No further competitors found."))
     await q.message.reply_html("Continue:", reply_markup=competition_keyboard(sid))
@@ -509,7 +546,7 @@ async def cmd_competitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         pass
     await reply_long(
         update.effective_message,
-        f"🎯 <b>COMPETITOR</b> focus={esc(focus)}\nAI: {esc(st)}\n\n{text}",
+        f"🎯 <b>COMPETITOR</b> focus={esc(focus)}\n\n{text}",
     )
 
 
@@ -531,7 +568,7 @@ async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status.delete()
     except Exception:
         pass
-    await reply_long(update.effective_message, f"⚖️ <b>COMPARE</b>\nAI: {esc(st)}\n\n{text}")
+    await reply_long(update.effective_message, f"⚖️ <b>COMPARE</b>\n\n{text}")
 
 
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -617,8 +654,7 @@ async def cmd_proposals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         pass
     await reply_long(
         msg,
-        f"📋 <b>MARKETING PROPOSALS</b>\nSources: {esc(intel.sources_label(sources))}\n"
-        f"AI: {esc(st)}\n\n{text or ''}",
+        f"📋 <b>MARKETING PROPOSALS</b>\nSources: {esc(intel.sources_label(sources))}\n\n{text or ''}",
     )
     await msg.reply_html("Formats:", reply_markup=_action_keyboard("prop"))
 
@@ -653,8 +689,17 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await status.delete()
     except Exception:
         pass
-    await reply_long(msg, f"💬 <b>REPLY</b> · AI: {esc(st)}\n\n{out or ''}")
-    await msg.reply_html("Refine:", reply_markup=_action_keyboard("gen"))
+    body = f"💬 <b>REPLY</b>\n\n{out or ''}"
+    if len(body) <= 4000:
+        sent = await msg.reply_html(body, reply_markup=_reply_keyboard())
+    else:
+        await reply_long(msg, body)
+        sent = await msg.reply_html("Options:", reply_markup=_reply_keyboard())
+    sess["msg_id"] = sent.message_id
+    sess["chat_id"] = sent.chat_id
+    sess["last_text"] = out or ""
+    sess["last_kind"] = "reply"
+    sess["user_request"] = text_in
 
 
 async def cmd_partnerships(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -693,7 +738,7 @@ async def cmd_partnerships(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await reply_long(
         msg,
         f"🤝 <b>PARTNERSHIPS</b>\nSources: {esc(intel.sources_label(sources))}\n"
-        f"AI: {esc(st)}\n\n{text or ''}",
+        f"\n{text or ''}",
     )
     await msg.reply_html("Explore:", reply_markup=_partner_keyboard())
 
@@ -722,7 +767,7 @@ async def cmd_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status.delete()
     except Exception:
         pass
-    await reply_long(msg, f"🔀 <b>SHUFFLE</b> · AI: {esc(st)}\n\n{out or ''}")
+    await reply_long(msg, f"🔀 <b>SHUFFLE</b>\n\n{out or ''}")
     await msg.reply_html("Again:", reply_markup=_action_keyboard("gen"))
 
 
@@ -733,13 +778,12 @@ async def cb_variations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not allowed(update.effective_user.id, context.application):
         await q.answer("Private", show_alert=True)
         return
-    await q.answer()
+    await q.answer("Updating…")
     parts = q.data.split(":")
     sess = _session(context, update.effective_user.id)
     sources = sess.get("sources")
     last = sess.get("last_text") or ""
-
-    status = await q.message.reply_text("✍️…")
+    status = None
     if parts[1] == "shuffle":
         out, st = await intel.run_shuffle(
             last, sources=sources, prior=sess.get("options") or [],
@@ -769,10 +813,11 @@ async def cb_variations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             prior_options=sess.get("options") or [],
         )
     elif parts[1] == "fmt":
-        fmt = parts[2] if len(parts) > 2 else "dev_dm"
+        fmt = parts[2] if len(parts) > 2 else "reply"
+        req = sess.get("user_request") or last or "Write 2–3 short options."
         out, st = await intel.run_reply_assistant(
             sources,
-            f"Turn this into {fmt} format, 3–4 natural options:\n{last[:3000]}",
+            req,
             mode=fmt,
             prior_options=sess.get("options") or [],
         )
@@ -795,20 +840,44 @@ async def cb_variations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     opts = intel.extract_options(out or "")
     if opts:
         sess["options"] = (sess.get("options") or []) + opts
-    try:
-        await status.delete()
-    except Exception:
-        pass
-    await reply_long(q.message, f"✨ AI: {esc(st)}\n\n{out or ''}")
+    if status:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    # EDIT existing message — do not flood chat with new messages
+    title = {
+        "shuffle": "🔀",
+        "prop": "📋",
+        "tone": "🎯",
+        "pov": "👤",
+        "fmt": "💬",
+        "part": "🤝",
+        "sug": "💡",
+        "rep": "📊",
+    }.get(parts[1], "✨")
+    body = f"{title}\n\n{out or ''}"
     if parts[1] == "part":
         kb = _partner_keyboard()
     elif parts[1] == "prop":
         kb = _action_keyboard("prop")
     elif parts[1] == "sug":
         kb = _suggest_keyboard()
+    elif parts[1] == "fmt" or sess.get("last_kind") == "reply":
+        kb = _reply_keyboard()
+    elif parts[1] == "rep":
+        kb = _report_keyboard()
     else:
-        kb = _action_keyboard("gen")
-    await q.message.reply_html("Refine:", reply_markup=kb)
+        kb = _reply_keyboard() if sess.get("last_kind") == "reply" else _action_keyboard("prop")
+
+    try:
+        if len(body) <= 4096:
+            await q.message.edit_text(body, parse_mode="HTML", reply_markup=kb)
+        else:
+            await q.message.edit_text(body[:4000] + "…", parse_mode="HTML", reply_markup=kb)
+    except Exception as exc:
+        log.warning("edit_text failed: %s — fallback reply", exc)
+        await q.message.reply_html(body[:4000], reply_markup=kb)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -858,7 +927,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await status.delete()
     except Exception:
         pass
-    await reply_long(update.message, f"💬 AI: {esc(st)}\n\n{out or ''}")
+    await reply_long(update.message, f"💬\n\n{out or ''}")
     await update.message.reply_html("Refine:", reply_markup=_action_keyboard("gen"))
 
 
