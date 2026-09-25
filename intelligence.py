@@ -69,6 +69,16 @@ Label AI-memory-only picks: ⚠️ INFERRED CANDIDATE
 LAST_AI_ERROR: str = ""
 AI_ATTEMPTS: list[str] = []  # internal diagnostics for /settings
 
+# One recovery model if Railway still has a deprecated id (404 model_not_found)
+CURRENT_FALLBACKS = {
+    "groq": "openai/gpt-oss-20b",
+    "groq2": "openai/gpt-oss-20b",
+    "gemini": "gemini-3.5-flash",
+    "cerebras": "llama3.1-8b",
+    "openrouter": "openrouter/free",
+    "openrouter2": "openrouter/free",
+}
+
 
 def _any_ai_key() -> bool:
     return bool(
@@ -129,29 +139,35 @@ async def complete(prompt: str, *, max_tokens: int = 2200) -> tuple[str | None, 
         LAST_AI_ERROR = "no keys or models configured"
         return None, "AI_NOT_CONFIGURED"
 
+    def _url_for(name: str) -> str:
+        if name.startswith("groq"):
+            return "https://api.groq.com/openai/v1/chat/completions"
+        if name.startswith("cerebras"):
+            return "https://api.cerebras.ai/v1/chat/completions"
+        return "https://openrouter.ai/api/v1/chat/completions"
+
     for name, kind, key, model, extra in chain:
-        if kind == "gemini":
-            text, status, detail = await _gemini_one(key, model, prompt, mt)
-        elif name.startswith("groq"):
-            text, status, detail = await _openai_one(
-                "https://api.groq.com/openai/v1/chat/completions",
-                key, model, prompt, mt, extra=extra,
-            )
-        elif name.startswith("cerebras"):
-            text, status, detail = await _openai_one(
-                "https://api.cerebras.ai/v1/chat/completions",
-                key, model, prompt, mt, extra=extra,
-            )
-        else:
-            text, status, detail = await _openai_one(
-                "https://openrouter.ai/api/v1/chat/completions",
-                key, model, prompt, mt, extra=extra,
-            )
-        AI_ATTEMPTS.append(f"{name}|{model}|{status}|{detail[:80]}")
-        log.info("AI attempt %s model=%s status=%s detail=%s", name, model, status, detail[:120])
-        if text:
-            LAST_AI_ERROR = ""
-            return text, f"ok:{name}"
+        models_to_try = [model]
+        fb = CURRENT_FALLBACKS.get(name)
+        if fb and fb != model:
+            models_to_try.append(fb)
+
+        text, status, detail = None, "AI_PROVIDER_ERROR", ""
+        for mid in models_to_try:
+            if kind == "gemini":
+                text, status, detail = await _gemini_one(key, mid, prompt, mt)
+            else:
+                text, status, detail = await _openai_one(
+                    _url_for(name), key, mid, prompt, mt, extra=extra,
+                )
+            AI_ATTEMPTS.append(f"{name}|{mid}|{status}|{detail[:80]}")
+            log.info("AI attempt %s model=%s status=%s detail=%s", name, mid, status, detail[:120])
+            if text:
+                LAST_AI_ERROR = ""
+                return text, f"ok:{name}:{mid}"
+            # Only recover once on model-not-found; other errors → next provider
+            if status != "AI_MODEL_ERROR":
+                break
         errors.append(f"{name}:{status}:{detail}")
 
     LAST_AI_ERROR = " | ".join(errors)[:600]
