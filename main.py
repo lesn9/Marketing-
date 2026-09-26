@@ -693,10 +693,13 @@ async def cmd_proposals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Proposal has its own format buttons, but still one message.
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Short", callback_data="prop:short"), InlineKeyboardButton("📩 Founder/Dev DM", callback_data="prop:founder_dm")],
-        [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
-        [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
-        [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
-        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🐦 X Comment", callback_data="prop:x_comment"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
+        [InlineKeyboardButton("🧠 Strategist", callback_data="prop:strategist"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
+        [InlineKeyboardButton("🎲 Random", callback_data="prop:random"), InlineKeyboardButton("❤️ Supporter", callback_data="prop:supporter")],
+        [InlineKeyboardButton("👥 Community", callback_data="prop:community"), InlineKeyboardButton("💰 Investor", callback_data="prop:investor")],
+        [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("📅 30-day", callback_data="prop:30day")],
+        [InlineKeyboardButton("🔀 More", callback_data="prop:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
     await update.effective_message.reply_text(render_html(state["title"], state["pages"][0], 0, len(state["pages"])), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
@@ -742,10 +745,13 @@ async def cb_proposal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     state = await make_state(context, update.effective_user.id, title=f"📋 PROPOSAL · {style}", command="marketingproposals", args=sess.get("ui", {}).get("args", []), text=out, sources=sources, status=st)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Short", callback_data="prop:short"), InlineKeyboardButton("📩 Founder/Dev DM", callback_data="prop:founder_dm")],
-        [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
-        [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
-        [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
-        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🐦 X Comment", callback_data="prop:x_comment"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
+        [InlineKeyboardButton("🧠 Strategist", callback_data="prop:strategist"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
+        [InlineKeyboardButton("🎲 Random", callback_data="prop:random"), InlineKeyboardButton("❤️ Supporter", callback_data="prop:supporter")],
+        [InlineKeyboardButton("👥 Community", callback_data="prop:community"), InlineKeyboardButton("💰 Investor", callback_data="prop:investor")],
+        [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("📅 30-day", callback_data="prop:30day")],
+        [InlineKeyboardButton("🔀 More", callback_data="prop:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
     await q.message.edit_text(render_html(state["title"], state["pages"][0], 0, len(state["pages"])), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
@@ -966,9 +972,12 @@ async def cb_commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         state = await make_state(context, update.effective_user.id, title="📋 MARKETING PROPOSAL", command="marketingproposals", args=[], text=out, sources=sources, status=st)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 Short", callback_data="prop:short"), InlineKeyboardButton("📩 Founder/Dev DM", callback_data="prop:founder_dm")],
-            [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
-            [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
-            [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
+            [InlineKeyboardButton("🐦 X Comment", callback_data="prop:x_comment"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
+            [InlineKeyboardButton("🧠 Strategist", callback_data="prop:strategist"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
+            [InlineKeyboardButton("🎲 Random", callback_data="prop:random"), InlineKeyboardButton("❤️ Supporter", callback_data="prop:supporter")],
+            [InlineKeyboardButton("👥 Community", callback_data="prop:community"), InlineKeyboardButton("💰 Investor", callback_data="prop:investor")],
+            [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("📅 30-day", callback_data="prop:30day")],
+            [InlineKeyboardButton("🔀 More", callback_data="prop:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
             [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
         ])
         state["special_keyboard"] = kb
