@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import html
 import logging
-import re
 import secrets
 import sys
 from pathlib import Path
@@ -34,7 +33,7 @@ COMMAND_NAV_EXCLUDED = {
     "unwatch", "shuffle", "help",
 }
 
-PAGE_LIMIT = 2600
+PAGE_LIMIT = 2400
 
 HELP = """📣 <b>Marketing + Competition Intelligence</b>
 
@@ -59,13 +58,23 @@ def esc(value: object) -> str:
 
 
 def clean_ai_text(text: str | None) -> str:
-    """Clean AI output while preserving useful emphasis for Telegram rendering."""
+    """Strip common AI/debug/markdown rubbish before anything reaches Telegram."""
     if not text:
         return ""
     banned_fragments = (
-        "AI shortlist + best-effort site checks", "AI shortlist", "best-effort site checks",
-        "User Safety:", "session ", "Batch ", "chain-of-thought", "internal reasoning",
-        "quality gate", "research engine", "tool output", "model routing", "debug",
+        "AI shortlist + best-effort site checks",
+        "AI shortlist",
+        "best-effort site checks",
+        "User Safety:",
+        "session ",
+        "Batch ",
+        "chain-of-thought",
+        "internal reasoning",
+        "quality gate",
+        "research engine",
+        "tool output",
+        "model routing",
+        "debug",
     )
     lines: list[str] = []
     in_code = False
@@ -78,17 +87,28 @@ def clean_ai_text(text: str | None) -> str:
             continue
         if any(x.lower() in line.lower() for x in banned_fragments):
             continue
-        # Kill table syntax; Telegram is much cleaner with short blocks.
-        if line.startswith("|") or re.match(r"^[-:| ]{4,}$", line):
+        # Remove markdown table separators and excessive markdown decoration.
+        if line.startswith("|---") or line.startswith("| ---"):
             continue
-        line = line.replace("__", "**")
+        line = line.replace("**", "").replace("__", "")
         while line.startswith("###"):
             line = line[3:].strip()
-        while line.startswith("##"):
+        if line.startswith("##"):
             line = line[2:].strip()
         if line:
             lines.append(line)
-    return "\n".join(lines).strip()
+    # Collapse more than one blank line.
+    out: list[str] = []
+    blanks = 0
+    for line in lines:
+        if not line:
+            blanks += 1
+            if blanks <= 1:
+                out.append("")
+        else:
+            blanks = 0
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 def split_pages(text: str, limit: int = PAGE_LIMIT) -> list[str]:
@@ -126,17 +146,8 @@ def split_pages(text: str, limit: int = PAGE_LIMIT) -> list[str]:
 
 
 def render_html(title: str, page: str, page_no: int, total: int) -> str:
-    """Render clean mobile Telegram HTML. Important headings are actually bold."""
-    marker = f"\n\n<b>Page {page_no + 1}/{total}</b>" if total > 1 else ""
-    raw = page or "Nothing to show yet."
-    # Escape first, then restore only intentional bold markers.
-    body = html.escape(raw)
-    body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
-    body = re.sub(r"(?m)^(Option\s+\d+\s*[—:-].*)$", r"<b>\1</b>", body, flags=re.I)
-    # Bold short all-caps/section heading lines without turning ordinary prose bold.
-    heading_re = r"(?m)^((?:🏆|📣|🎯|💬|📈|🚀|💡|🤝|👥|🔎|🧠|🏗️|🐦|🟣|📋|📅|💼|📩|🌱|💰|🕳️|⚖️|🔗|🎙️|📰)\s+[^\n]{2,80})$"
-    body = re.sub(heading_re, r"<b>\1</b>", body)
-    return f"<b>{html.escape(title)}</b>\n\n{body}{marker}"
+    marker = f"\n\nPage {page_no + 1}/{total}" if total > 1 else ""
+    return f"<b>{esc(title)}</b>\n\n{esc(page)}{marker}"
 
 
 def allowed(uid: int, app: Application | None = None) -> bool:
