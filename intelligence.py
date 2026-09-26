@@ -1493,48 +1493,125 @@ async def run_marketing_proposals(
     style: str = "full",
     prior_text: str = "",
 ) -> tuple[str, str]:
-    style_guide = {
-        "full": "Full marketing proposal someone could send a team.",
-        "short": "Short pitch (8–12 lines max).",
-        "founder_dm": "Natural founder/dev DM — helpful, not salesy unless asked.",
-        "x_dm": "Very short X DM opener (under 280 chars per option, 3 options).",
-        "email": "Professional but human email proposal.",
-        "job": "Job/application pitch — clear value, not desperate.",
-        "partner": "Partnership-style proposal.",
-        "community": "Community-focused proposal with concrete community execution.",
-        "30day": "Concrete 30-day execution plan.",
-        "quick": "Ultra-short proposal (what I noticed + what I'd do + first step).",
-    }.get(style, "Full proposal")
+    """Human proposals only — short, sendable, different angles. Never agency templates."""
+    style = (style or "full").lower().strip()
 
-    prompt = f"""{GATE}
-{HUMAN_VOICE}
+    # What the user actually gets for each button
+    style_rules = {
+        "full": (
+            "Write 3 separate short proposals the user could paste to a founder/team. "
+            "Each option = one different marketing angle (not 3 sections of one plan). "
+            "Each option: 5–12 short lines max. Natural prose, no tables, no numbered playbooks."
+        ),
+        "short": (
+            "Write 3 short proposals. Each under 8 lines. One observation + what you'd do + first step."
+        ),
+        "founder_dm": (
+            "Write 3 FOUNDER/DEV DMs only. Each is a real message someone could send in TG or X DM. "
+            "Conversational. No résumé. No job pitch. No strategy deck. 4–8 lines each."
+        ),
+        "x_dm": (
+            "Write 3 X DM openers. Each under 280 characters. Natural. Specific to this project."
+        ),
+        "email": (
+            "Write 2 short human emails (subject + body). Not a deck. Not corporate."
+        ),
+        "job": (
+            "Write 3 JOB/SERVICE pitches. External marketer offering help. Natural conversation, not a CV. "
+            "Clearly offer marketing/community/growth help. 6–12 lines each. Different angles."
+        ),
+        "partner": (
+            "Write 3 partnership outreach messages. Mutual fit, specific collaboration idea. Not 'strategic partnerships'."
+        ),
+        "community": (
+            "Write 3 community-focused proposals. What you'd actually do with the community. External observer, not 'we should'."
+        ),
+        "30day": (
+            "One loose 30-day plan in plain sentences (Week 1 / Week 2 / …). NO tables. NO role titles. "
+            "Also give 2 alternate angles in short form."
+        ),
+        "quick": (
+            "3 ultra-short options. Each: what I noticed (1–2 lines) + what I'd do (2–3 lines)."
+        ),
+        "shuffle": (
+            "3 brand-new proposal angles that do NOT repeat the prior text. Same project, different approach."
+        ),
+    }.get(style, (
+        "Write 3 short human proposals. Different angles. Copy-paste ready."
+    ))
 
-TASK: Marketing PROPOSAL for this project.
-STYLE: {style} — {style_guide}
+    prior_block = ""
+    if prior_text:
+        prior_block = (
+            "\nPRIOR OUTPUT (do NOT repeat the same angles or wording):\n"
+            + prior_text[:2200]
+            + "\n"
+        )
 
-EVIDENCE:
+    prompt = f"""{HUMAN_VOICE}
+
+You write marketing proposals a real Web3 person would actually send.
+STYLE REQUESTED: {style}
+{style_rules}
+
+PROJECT EVIDENCE (only use what is here — never invent followers, TG size, launches, metrics, partnerships):
 {evidence_brief(sources)}
+{prior_block}
 
-{"PRIOR OUTPUT TO REFINE:\n" + prior_text[:2500] if prior_text else ""}
+HARD RULES — BREAKING ANY OF THESE FAILS THE TASK:
+1. HUMAN VOICE ONLY. Sound like: "I went through this project and here's what I'd actually do."
+2. At least 3 options (label Option 1 / Option 2 / Option 3) unless style is singular (30day still needs 2 alternate angles).
+3. EACH option must use a DIFFERENT marketing angle. Examples of distinct angles (pick what fits evidence):
+   - product/content visibility
+   - community participation
+   - creator / micro-KOL test
+   - ecosystem / chain distribution
+   - funnel / conversion from discovery → action
+   - narrative / positioning
+   Do NOT give the same plan three times with different adjectives.
+4. NO markdown tables. NO "Phase | Action | Owner | Timeline". NO "Marketing Lead".
+5. NO agency tone. Ban: "I believe", "strong opportunity", "leverage", "maximize", "unlock",
+   "drive engagement", "build brand awareness", "strategic partnerships", "robust community",
+   "in today's competitive landscape", "I'm ready to jump in", "get the community buzzing",
+   "comprehensive strategy", "high-impact", "game-changing".
+6. Start from something actually observed about THIS project. If X/TG wasn't verified, say so — don't invent "0 tweets" drama unless evidence supports it.
+7. Keep each option SHORT. A good proposal can be 5–12 lines. Length is not quality.
+8. Founder/Dev DM ≠ Job pitch. DM = helpful outsider observation. Job = clearly offering the user's services.
+9. Never invent success metrics (e.g. "5k wallets", "30% conversion") unless from evidence.
+10. If a line could be sent to 500 random Web3 projects by changing the name, rewrite it.
 
-Write this like something a real person could actually send. Do not write an agency proposal unless the requested style is explicitly a full proposal.
+GOOD SHAPE (adapt; do not copy word-for-word every time):
 
-PROPOSAL WRITING RULES — FOLLOW THESE HARD: 
-- Generate at least 3 genuinely different options for proposal-style outputs unless the requested format itself is singular (for example a 30-day plan). When singular, still include at least 3 distinct angles/experiments where useful.
-- Do NOT make Option 1, 2 and 3 the same proposal with different adjectives. Pick different angles: e.g. product/content, community/creator, ecosystem/distribution, funnel/conversion, regional, narrative, etc. Only use angles that fit the evidence.
-- Start from one or two real observations about THIS project. If evidence is thin, say what is actually known and avoid pretending.
-- Show the actual execution: what you would do, where, who it is for, what you would send/build/run, and what you would watch for. Give a concrete example when useful.
-- Keep each option concise enough to send. Do not add filler just to make it look like a proposal.
-- Founder/dev DM: useful outsider opening a conversation. No résumé, no job application language.
-- Job pitch: clearly offer the user's marketing/community/growth services, but write like a person opening a conversation rather than a CV.
-- X DM: short, natural, specific.
-- Partnership: explain the actual mutual fit and collaboration format, not “strategic partnerships”.
-- Community: focus on a useful community idea, not selling a service.
-- For full/short proposals, the user should be able to copy the text and send it immediately.
-- Never invent relationships, results, metrics or existing activity.
+Option 1 — [angle name]
+Hey / One thing I noticed…
+I'd probably…
+First step…
+(optional) If useful: who / where / what I'd watch
+
+Option 2 — [different angle]
+…
+
+Option 3 — [different angle]
+…
+
+Output finished copy only. No thinking process. No "Current State / Diagnosis / Execution" headers.
 """
-    text, st = await complete_fast(prompt, max_tokens=2200)
-    return text or _fallback("proposals", sources, st), st
+    text, st = await complete_fast(prompt, max_tokens=1600)
+    text = (text or "").strip()
+    if not text:
+        return _fallback("proposals", sources, st), st
+    # Strip accidental tables / agency headers if the model still emits them
+    cleaned_lines: list[str] = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("|") or (s and set(s) <= set("|-: ")):
+            continue
+        low = s.lower()
+        if low.startswith(("current state", "diagnosis", "strategic recommendation", "implementation", "expected outcomes", "execution steps")):
+            continue
+        cleaned_lines.append(ln)
+    text = "\n".join(cleaned_lines).strip()
+    return text, st
 
 
 async def run_reply_assistant(
