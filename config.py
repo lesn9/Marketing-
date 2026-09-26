@@ -28,6 +28,11 @@ OPENROUTER_API_KEY_2 = env("OPENROUTER_API_KEY_2", "OPENROUTER_API_KEY2", "OPENR
 GEMINI_API_KEY = env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_API_KEY")
 CEREBRAS_API_KEY = env("CEREBRAS_API_KEY", "CEREBRAS_KEY")
 
+TAVILY_API_KEY = env("TAVILY_API_KEY")
+TAVILY_SEARCH_DEPTH = env("TAVILY_SEARCH_DEPTH", default="advanced")
+TAVILY_MAX_RESULTS = int(env("TAVILY_MAX_RESULTS", default="8") or "8")
+TAVILY_EXTRACT_DEPTH = env("TAVILY_EXTRACT_DEPTH", default="advanced")
+
 # Current production model IDs (Sept 2026). Override on Railway if needed.
 # Groq deprecated llama-3.1-8b-instant / llama-3.3-70b-versatile (Aug 2026).
 GROQ_MODEL = env("GROQ_MODEL", default="openai/gpt-oss-20b")
