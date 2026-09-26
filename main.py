@@ -33,7 +33,7 @@ COMMAND_NAV_EXCLUDED = {
     "unwatch", "shuffle", "help",
 }
 
-PAGE_LIMIT = 3500
+PAGE_LIMIT = 2200
 
 HELP = """📣 <b>Marketing + Competition Intelligence</b>
 
@@ -90,7 +90,7 @@ def clean_ai_text(text: str | None) -> str:
         # Remove markdown table separators and excessive markdown decoration.
         if line.startswith("|---") or line.startswith("| ---"):
             continue
-        line = line.replace("**", "").replace("__", "")
+        line = line.replace("**", "").replace("__", "").replace("`", "")
         while line.startswith("###"):
             line = line[3:].strip()
         if line.startswith("##"):
@@ -147,7 +147,10 @@ def split_pages(text: str, limit: int = PAGE_LIMIT) -> list[str]:
 
 def render_html(title: str, page: str, page_no: int, total: int) -> str:
     marker = f"\n\nPage {page_no + 1}/{total}" if total > 1 else ""
-    return f"<b>{esc(title)}</b>\n\n{esc(page)}{marker}"
+    # Telegram makes <pre> blocks easy to copy. Use it for proposal/outreach pages.
+    copyable = any(k in title.upper() for k in ("PROPOSAL", "DEV DM", "X DM", "JOB PITCH"))
+    body = f"<pre>{esc(page)}</pre>" if copyable else esc(page)
+    return f"<b>{esc(title)}</b>\n\n{body}{marker}"
 
 
 def allowed(uid: int, app: Application | None = None) -> bool:
@@ -696,7 +699,11 @@ async def cmd_proposals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
         [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
         [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
-        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🎯 Direct", callback_data="prop:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="prop:casual")],
+        [InlineKeyboardButton("🧠 Strategic", callback_data="prop:strategic"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
+        [InlineKeyboardButton("📣 Marketer", callback_data="prop:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="prop:dev_dm")],
+        [InlineKeyboardButton("💡 Examples", callback_data="ui:examples"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
     await update.effective_message.reply_text(render_html(state["title"], state["pages"][0], 0, len(state["pages"])), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
@@ -716,8 +723,9 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = await make_state(context, update.effective_user.id, title="💬 REPLY", command="reply", args=list(context.args), text=out, sources=sess.get("sources"), status=st)
     # Reply is explicitly excluded from generic command nav, but gets useful reply-format controls.
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm"), InlineKeyboardButton("🐦 X reply", callback_data="reply:x_reply")],
-        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🎯 Direct", callback_data="reply:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="reply:casual"), InlineKeyboardButton("🧠 Strategic", callback_data="reply:strategic")],
+        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm")],
+        [InlineKeyboardButton("🐦 X Reply", callback_data="reply:x_reply"), InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
         [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
@@ -745,7 +753,11 @@ async def cb_proposal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
         [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
         [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
-        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🎯 Direct", callback_data="prop:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="prop:casual")],
+        [InlineKeyboardButton("🧠 Strategic", callback_data="prop:strategic"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
+        [InlineKeyboardButton("📣 Marketer", callback_data="prop:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="prop:dev_dm")],
+        [InlineKeyboardButton("💡 Examples", callback_data="ui:examples"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
     await q.message.edit_text(render_html(state["title"], state["pages"][0], 0, len(state["pages"])), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
@@ -764,8 +776,9 @@ async def cb_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         out, st = await intel.run_reply_assistant(sess.get("sources"), sess.get("last_text") or "", mode=mode, perspective=mode)
     state = await make_state(context, update.effective_user.id, title=f"💬 REPLY · {mode}", command="reply", args=[], text=out, sources=sess.get("sources"), status=st)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm"), InlineKeyboardButton("🐦 X reply", callback_data="reply:x_reply")],
-        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🎯 Direct", callback_data="reply:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="reply:casual"), InlineKeyboardButton("🧠 Strategic", callback_data="reply:strategic")],
+        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm")],
+        [InlineKeyboardButton("🐦 X Reply", callback_data="reply:x_reply"), InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
         [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
@@ -836,12 +849,20 @@ async def cb_ui(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         cmd = state.get("command")
         args = list(state.get("args") or [])
         if cmd in {"competition", "reply", "marketingproposals"}:
-            # Those have dedicated callbacks; refresh their current state instead of duplicating messages.
+            # Refresh in place and preserve the current approach/style when possible.
             if cmd == "reply":
                 sess["ui"] = state
-                out, st = await intel.run_reply_assistant(sess.get("sources"), sess.get("last_text") or "")
+                current = str(state.get("title") or "").split("·", 1)[-1].strip().lower()
+                mode = {"direct":"direct", "casual":"casual", "strategic":"strategic", "user pov":"user", "marketer":"marketer", "dev dm":"dev_dm", "x reply":"x_reply"}.get(current, "auto")
+                out, st = await intel.run_reply_assistant(sess.get("sources"), sess.get("last_text") or "", mode=mode, perspective=mode)
             else:
-                out, st = await intel.run_marketing_proposals(sess.get("sources"), style="full")
+                current = str(state.get("title") or "").lower()
+                style = "full"
+                for candidate in ("short", "founder_dm", "x_dm", "job", "partner", "community", "30day", "direct", "casual", "strategic", "user_pov", "marketer", "dev_dm"):
+                    if candidate.replace("_", " ") in current:
+                        style = candidate
+                        break
+                out, st = await intel.run_marketing_proposals(sess.get("sources"), style=style, prior_text=sess.get("last_text") or "")
             state.update({"pages": split_pages(out), "base_pages": split_pages(out), "page": 0, "view": "main", "last_text": out, "status": st})
             sess["last_text"] = out
             await edit_state(q.message, state)
