@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ COMMAND_NAV_EXCLUDED = {
     "unwatch", "shuffle", "help",
 }
 
-PAGE_LIMIT = 2200
+PAGE_LIMIT = 2600
 
 HELP = """📣 <b>Marketing + Competition Intelligence</b>
 
@@ -58,23 +59,13 @@ def esc(value: object) -> str:
 
 
 def clean_ai_text(text: str | None) -> str:
-    """Strip common AI/debug/markdown rubbish before anything reaches Telegram."""
+    """Clean AI output while preserving useful emphasis for Telegram rendering."""
     if not text:
         return ""
     banned_fragments = (
-        "AI shortlist + best-effort site checks",
-        "AI shortlist",
-        "best-effort site checks",
-        "User Safety:",
-        "session ",
-        "Batch ",
-        "chain-of-thought",
-        "internal reasoning",
-        "quality gate",
-        "research engine",
-        "tool output",
-        "model routing",
-        "debug",
+        "AI shortlist + best-effort site checks", "AI shortlist", "best-effort site checks",
+        "User Safety:", "session ", "Batch ", "chain-of-thought", "internal reasoning",
+        "quality gate", "research engine", "tool output", "model routing", "debug",
     )
     lines: list[str] = []
     in_code = False
@@ -87,28 +78,17 @@ def clean_ai_text(text: str | None) -> str:
             continue
         if any(x.lower() in line.lower() for x in banned_fragments):
             continue
-        # Remove markdown table separators and excessive markdown decoration.
-        if line.startswith("|---") or line.startswith("| ---"):
+        # Kill table syntax; Telegram is much cleaner with short blocks.
+        if line.startswith("|") or re.match(r"^[-:| ]{4,}$", line):
             continue
-        line = line.replace("**", "").replace("__", "").replace("`", "")
+        line = line.replace("__", "**")
         while line.startswith("###"):
             line = line[3:].strip()
-        if line.startswith("##"):
+        while line.startswith("##"):
             line = line[2:].strip()
         if line:
             lines.append(line)
-    # Collapse more than one blank line.
-    out: list[str] = []
-    blanks = 0
-    for line in lines:
-        if not line:
-            blanks += 1
-            if blanks <= 1:
-                out.append("")
-        else:
-            blanks = 0
-            out.append(line)
-    return "\n".join(out).strip()
+    return "\n".join(lines).strip()
 
 
 def split_pages(text: str, limit: int = PAGE_LIMIT) -> list[str]:
@@ -146,11 +126,17 @@ def split_pages(text: str, limit: int = PAGE_LIMIT) -> list[str]:
 
 
 def render_html(title: str, page: str, page_no: int, total: int) -> str:
-    marker = f"\n\nPage {page_no + 1}/{total}" if total > 1 else ""
-    # Telegram makes <pre> blocks easy to copy. Use it for proposal/outreach pages.
-    copyable = any(k in title.upper() for k in ("PROPOSAL", "DEV DM", "X DM", "JOB PITCH"))
-    body = f"<pre>{esc(page)}</pre>" if copyable else esc(page)
-    return f"<b>{esc(title)}</b>\n\n{body}{marker}"
+    """Render clean mobile Telegram HTML. Important headings are actually bold."""
+    marker = f"\n\n<b>Page {page_no + 1}/{total}</b>" if total > 1 else ""
+    raw = page or "Nothing to show yet."
+    # Escape first, then restore only intentional bold markers.
+    body = html.escape(raw)
+    body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
+    body = re.sub(r"(?m)^(Option\s+\d+\s*[—:-].*)$", r"<b>\1</b>", body, flags=re.I)
+    # Bold short all-caps/section heading lines without turning ordinary prose bold.
+    heading_re = r"(?m)^((?:🏆|📣|🎯|💬|📈|🚀|💡|🤝|👥|🔎|🧠|🏗️|🐦|🟣|📋|📅|💼|📩|🌱|💰|🕳️|⚖️|🔗|🎙️|📰)\s+[^\n]{2,80})$"
+    body = re.sub(heading_re, r"<b>\1</b>", body)
+    return f"<b>{html.escape(title)}</b>\n\n{body}{marker}"
 
 
 def allowed(uid: int, app: Application | None = None) -> bool:
@@ -699,11 +685,7 @@ async def cmd_proposals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
         [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
         [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
-        [InlineKeyboardButton("🎯 Direct", callback_data="prop:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="prop:casual")],
-        [InlineKeyboardButton("🧠 Strategic", callback_data="prop:strategic"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
-        [InlineKeyboardButton("📣 Marketer", callback_data="prop:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="prop:dev_dm")],
-        [InlineKeyboardButton("💡 Examples", callback_data="ui:examples"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
-        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
+        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
     ])
     state["special_keyboard"] = kb
     await update.effective_message.reply_text(render_html(state["title"], state["pages"][0], 0, len(state["pages"])), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
@@ -723,9 +705,8 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = await make_state(context, update.effective_user.id, title="💬 REPLY", command="reply", args=list(context.args), text=out, sources=sess.get("sources"), status=st)
     # Reply is explicitly excluded from generic command nav, but gets useful reply-format controls.
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎯 Direct", callback_data="reply:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="reply:casual"), InlineKeyboardButton("🧠 Strategic", callback_data="reply:strategic")],
-        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm")],
-        [InlineKeyboardButton("🐦 X Reply", callback_data="reply:x_reply"), InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm"), InlineKeyboardButton("🐦 X reply", callback_data="reply:x_reply")],
+        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
         [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
@@ -753,11 +734,7 @@ async def cb_proposal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         [InlineKeyboardButton("🐦 X DM", callback_data="prop:x_dm"), InlineKeyboardButton("💼 Job pitch", callback_data="prop:job")],
         [InlineKeyboardButton("🤝 Partnership", callback_data="prop:partner"), InlineKeyboardButton("👥 Community", callback_data="prop:community")],
         [InlineKeyboardButton("📅 30-day", callback_data="prop:30day"), InlineKeyboardButton("🔀 More", callback_data="prop:shuffle")],
-        [InlineKeyboardButton("🎯 Direct", callback_data="prop:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="prop:casual")],
-        [InlineKeyboardButton("🧠 Strategic", callback_data="prop:strategic"), InlineKeyboardButton("👤 User POV", callback_data="prop:user_pov")],
-        [InlineKeyboardButton("📣 Marketer", callback_data="prop:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="prop:dev_dm")],
-        [InlineKeyboardButton("💡 Examples", callback_data="ui:examples"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
-        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
+        [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
     ])
     state["special_keyboard"] = kb
     await q.message.edit_text(render_html(state["title"], state["pages"][0], 0, len(state["pages"])), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
@@ -776,9 +753,8 @@ async def cb_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         out, st = await intel.run_reply_assistant(sess.get("sources"), sess.get("last_text") or "", mode=mode, perspective=mode)
     state = await make_state(context, update.effective_user.id, title=f"💬 REPLY · {mode}", command="reply", args=[], text=out, sources=sess.get("sources"), status=st)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎯 Direct", callback_data="reply:direct"), InlineKeyboardButton("🗣️ Casual", callback_data="reply:casual"), InlineKeyboardButton("🧠 Strategic", callback_data="reply:strategic")],
-        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm")],
-        [InlineKeyboardButton("🐦 X Reply", callback_data="reply:x_reply"), InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
+        [InlineKeyboardButton("🔀 More", callback_data="reply:shuffle"), InlineKeyboardButton("📩 Dev DM", callback_data="reply:dev_dm"), InlineKeyboardButton("🐦 X reply", callback_data="reply:x_reply")],
+        [InlineKeyboardButton("👤 User POV", callback_data="reply:user"), InlineKeyboardButton("📣 Marketer", callback_data="reply:marketer"), InlineKeyboardButton("🔄 Refresh", callback_data="ui:refresh")],
         [InlineKeyboardButton("◀️ Back", callback_data="ui:prev"), InlineKeyboardButton("▶️ Next", callback_data="ui:next")],
     ])
     state["special_keyboard"] = kb
@@ -849,20 +825,12 @@ async def cb_ui(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         cmd = state.get("command")
         args = list(state.get("args") or [])
         if cmd in {"competition", "reply", "marketingproposals"}:
-            # Refresh in place and preserve the current approach/style when possible.
+            # Those have dedicated callbacks; refresh their current state instead of duplicating messages.
             if cmd == "reply":
                 sess["ui"] = state
-                current = str(state.get("title") or "").split("·", 1)[-1].strip().lower()
-                mode = {"direct":"direct", "casual":"casual", "strategic":"strategic", "user pov":"user", "marketer":"marketer", "dev dm":"dev_dm", "x reply":"x_reply"}.get(current, "auto")
-                out, st = await intel.run_reply_assistant(sess.get("sources"), sess.get("last_text") or "", mode=mode, perspective=mode)
+                out, st = await intel.run_reply_assistant(sess.get("sources"), sess.get("last_text") or "")
             else:
-                current = str(state.get("title") or "").lower()
-                style = "full"
-                for candidate in ("short", "founder_dm", "x_dm", "job", "partner", "community", "30day", "direct", "casual", "strategic", "user_pov", "marketer", "dev_dm"):
-                    if candidate.replace("_", " ") in current:
-                        style = candidate
-                        break
-                out, st = await intel.run_marketing_proposals(sess.get("sources"), style=style, prior_text=sess.get("last_text") or "")
+                out, st = await intel.run_marketing_proposals(sess.get("sources"), style="full")
             state.update({"pages": split_pages(out), "base_pages": split_pages(out), "page": 0, "view": "main", "last_text": out, "status": st})
             sess["last_text"] = out
             await edit_state(q.message, state)

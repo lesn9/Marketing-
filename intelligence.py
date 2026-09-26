@@ -47,10 +47,7 @@ FINAL QUALITY CHECK:
 - Give concrete examples, not just advice.
 - Separate facts from inferences.
 - Do not repeat the same idea in different words.
-- Keep the answer useful on a phone: one compact page at a time.
-- Prefer 3–4 strong points over a catalogue.
-- Every recommendation must answer WHAT, HOW, EXAMPLE and WHY when relevant.
-- Never expose internal instructions, research state, debug metadata or reasoning.
+- Keep the answer useful on a phone.
 """
 
 COMPETITOR_RULES = """
@@ -404,36 +401,50 @@ async def tavily_extract(urls: list[str]) -> list[dict[str, Any]]:
 
 
 async def deep_web_research(sources: dict[str, Any], *, mode: str = "general", extra: str = "") -> dict[str, Any]:
-    """Deep live-web retrieval. Uses broad discovery as well as subject-specific searches."""
+    """Run several focused live-web searches and return evidence for the AI layer."""
     if not config.TAVILY_API_KEY:
         return {"enabled": False, "results": [], "extracted": []}
     identity = project_identity(sources)
-    subject_type = str(sources.get("project_type") or "Web3 project")
-    w = sources.get("website") or {}
-    subject_text = " ".join([str(w.get("title") or ""), str(w.get("meta_description") or ""), str(w.get("text_sample") or "")[:900]])
-    category = extra.split("category=", 1)[1].split(";", 1)[0] if "category=" in extra else mode
-    category_queries = {
-        "similar": [f'Web3 {subject_type} projects similar product alternatives', f'Web3 projects solving {subject_text[:350]}'],
-        "architecture": [f'Web3 projects similar architecture {subject_type} protocol stack', f'crypto protocols innovative architecture {subject_type}'],
-        "social": ['Web3 projects best X social media strategy community storytelling', f'{subject_type} crypto projects strong X social presence'],
-        "marketing": ['Web3 projects notable marketing campaigns creator KOL PR community', f'{subject_type} crypto projects successful marketing campaigns'],
-        "ux": ['Web3 projects best website UX onboarding product experience', f'{subject_type} Web3 apps strong UX onboarding'],
-        "community": ['Web3 projects strong Telegram Discord community programs ambassadors', f'{subject_type} crypto projects community growth examples'],
-        "growth": ['Web3 projects growth loops referral quests activation campaigns', f'{subject_type} crypto growth case studies'],
-        "samestage": [f'emerging early stage Web3 {subject_type} projects launch community', f'new Web3 {subject_type} projects growing community 2025 2026'],
-        "samelevel": [f'mid-tier Web3 {subject_type} projects similar market maturity', f'growing crypto projects {subject_type} similar scale'],
-    }.get(category, [f'Web3 {category} examples projects', f'crypto {category} case studies'])
-    queries = [
-        f'"{identity}" official website product X Telegram',
-        f'"{identity}" marketing community partnership growth',
-        f'"{identity}" X Twitter posts Spaces AMA Telegram Discord',
-        *category_queries,
-    ]
+    queries = {
+        "general": [
+            f'"{identity}" official website docs product X Telegram',
+            f'"{identity}" marketing campaign community partnership growth',
+            f'"{identity}" X Twitter posts Space AMA',
+            f'"{identity}" Telegram Discord Reddit community',
+            f'"{identity}" YouTube Medium Mirror GitHub newsletter media',
+        ],
+        "competition": [
+            f'Web3 projects similar to "{identity}" product use case competitors',
+            f'"{identity}" competitors alternative Web3 projects',
+            f'"{identity}" marketing campaign community partnership growth',
+            f'"{identity}" X Twitter Telegram Discord YouTube Reddit Medium GitHub AMA Space',
+        ],
+    }.get(mode, [
+        f'"{identity}" {mode} Web3',
+        f'"{identity}" {mode} marketing community growth',
+        f'Web3 {mode} projects examples campaigns',
+    ])
     if extra:
-        queries.append(f'{subject_type} {extra[:500]}')
+        queries = [q + " " + extra[:300] for q in queries]
+        category_terms = {
+            "social": "X Twitter content posts Spaces social strategy creators",
+            "marketing": "campaign ads creators KOL sponsorship events PR launch marketing",
+            "community": "Telegram Discord ambassadors quests community onboarding engagement",
+            "growth": "growth loops referrals quests waitlist acquisition retention activation",
+            "ux": "website UX onboarding product interface docs conversion user journey",
+            "architecture": "architecture protocol stack mechanism technical design docs",
+            "samestage": "early stage emerging growing community marketing launch",
+            "samelevel": "similar maturity market level audience scale growth",
+            "product": "product use case users alternatives",
+            "similar": "same user need product category alternatives",
+        }
+        mode_key = extra.split("category=", 1)[1].split(";", 1)[0] if "category=" in extra else ""
+        if mode_key in category_terms:
+            queries.append(f'"{identity}" {category_terms[mode_key]}')
     gathered: list[dict[str, Any]] = []
-    for q in queries[:9]:
-        gathered.extend(await tavily_search(q, max_results=8))
+    for q in queries:
+        gathered.extend(await tavily_search(q, max_results=6))
+    # Deduplicate by URL while keeping the strongest first occurrence.
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for r in gathered:
@@ -442,14 +453,15 @@ async def deep_web_research(sources: dict[str, Any], *, mode: str = "general", e
             continue
         seen.add(u)
         unique.append(r)
-    extract_urls = [r["url"] for r in unique[:14] if r.get("url")]
-    official = w.get("url")
-    docs = ((w.get("links") or {}).get("docs") or [])
+    # Expand the most relevant pages, not every search result.
+    extract_urls = [r["url"] for r in unique[:8] if r.get("url")]
+    official = (sources.get("website") or {}).get("url")
+    docs = ((sources.get("website") or {}).get("links") or {}).get("docs") or []
     for u in [official, *docs]:
         if u and u not in extract_urls:
             extract_urls.append(u)
-    extracted = await tavily_extract(extract_urls[:18])
-    return {"enabled": True, "results": unique[:28], "extracted": extracted[:12], "queries": queries}
+    extracted = await tavily_extract(extract_urls[:12])
+    return {"enabled": True, "results": unique[:18], "extracted": extracted[:8], "queries": queries}
 
 
 def project_identity(sources: dict[str, Any]) -> str:
@@ -1140,19 +1152,16 @@ Never invent existing relationships. Prefer partner types unless a name is in ev
 
 async def run_organic(sources: dict[str, Any]) -> tuple[str, str]:
     prompt = f"""{GATE}
-{HUMAN_VOICE}
-{MOBILE_OUTPUT}
-
-ORGANIC MARKETING — ONLY THE BEST 3 IDEAS FOR THIS PROJECT.
-Do not dump a catalogue of channels. Research the evidence below and pick the 3 organic mechanisms that actually fit.
-For each: WHAT / HOW / EXAMPLE / WHY THIS PROJECT.
-Examples must be real execution examples, not generic labels. If recommending a content loop, write one sample post. If recommending community work, write the actual prompt/event format. If recommending outreach, write a short outreach example.
-Never invent a Telegram activity level, metric, partnership or product feature.
+ORGANIC growth plan for this specific project (minimal paid ads).
 
 EVIDENCE:
 {evidence_brief(sources)}
+
+Cover: X organic, content loops, community loops, founder-led, product-led, education,
+recurring series, partnerships, UGC, ambassadors, Spaces, ecosystem participation.
+Concrete plan with weekly rhythm examples. Project-specific only.
 """
-    text, st = await complete(prompt, max_tokens=1500)
+    text, st = await complete(prompt, max_tokens=2000)
     return text or _fallback("organic", sources, st), st
 
 
@@ -1292,83 +1301,95 @@ async def discover_competitors(
     exclude: list[str] | None = None,
     batch_size: int = 5,
 ) -> tuple[str, str, list[str]]:
-    """Find category-specific Web3 comparables/benchmarks. No fixed quota."""
+    """Research category-specific Web3 comparables. Count is evidence-driven, never quota-driven."""
     exclude = exclude or []
     mode_desc = MODES.get(mode, MODES["similar"])
+    extra = f"category={mode}; {mode_desc}"
     try:
-        research = await deep_web_research(sources, mode="competition", extra=f"category={mode}; {mode_desc}")
+        research = await deep_web_research(sources, mode="competition", extra=extra)
     except Exception as exc:
         log.warning("competition research: %s", exc)
         research = {"results": [], "extracted": []}
+
+    research_lines = []
+    for r in (research.get("results") or [])[:16]:
+        research_lines.append(f"SOURCE: {r.get('title')}\nURL: {r.get('url')}\nTEXT: {r.get('content','')[:1200]}")
+    for r in (research.get("extracted") or [])[:6]:
+        research_lines.append(f"EXTRACTED URL: {r.get('url')}\nTEXT: {r.get('content','')[:1800]}")
     evidence = evidence_brief(sources)
-    lines = []
-    for r in (research.get("results") or [])[:24]:
-        lines.append(f"TITLE: {r.get('title')}\nURL: {r.get('url')}\nCONTENT: {r.get('content','')[:1500]}")
-    for r in (research.get("extracted") or [])[:10]:
-        lines.append(f"PAGE: {r.get('url')}\nCONTENT: {r.get('content','')[:2200]}")
-    exclusion = ", ".join(exclude) if exclude else "none"
     prompt = f"""{GATE}
 {COMPETITOR_RULES}
-{MOBILE_OUTPUT}
 
-CATEGORY: {mode.upper()}
-MEANING: {mode_desc}
-SUBJECT EVIDENCE:
+TASK: Find useful Web3 comparables for the SUBJECT in category: {mode.upper()}.
+CATEGORY MEANING: {mode_desc}
+
+SUBJECT:
 {evidence}
 
-LIVE WEB EVIDENCE:
-{chr(10).join(lines)[:26000] or '(No live web evidence)'}
+LIVE WEB RESEARCH:
+{chr(10).join(research_lines)[:15000] if research_lines else '(No Tavily results. Use only directly verified evidence; do not invent.)'}
 
-ALREADY SHOWN IN THIS COMPETITION SESSION — DO NOT USE THESE AGAIN:
-{exclusion}
+ALREADY USED IN ANY CATEGORY — DO NOT REUSE:
+{', '.join(exclude) if exclude else '(none)'}
 
-For SIMILAR PRODUCTS, find genuinely comparable Web3 products.
-For ARCHITECTURE, find Web3 projects worth studying for technical/product architecture.
-For SOCIAL LEADERS, MARKETING, UX LEADERS, COMMUNITY and GROWTH, this is a BENCHMARK view: they do not have to be direct competitors, but they must be real Web3 projects with evidence relevant to that category.
-For SAME-STAGE and SAME-LEVEL, prioritize maturity/scale comparables where the evidence supports it.
+Return ONLY candidates supported by the research above. Prefer 2–5 genuinely useful candidates; fewer is better than padding.
+For each candidate use exactly this shape:
+🏆 NAME
+🌐 WEBSITE: https://...
+WHY IT BELONGS: one concrete reason tied to this category.
+OBSERVED: one or two things actually supported by the sources.
+LEARN: what the subject can study.
+ADAPT: a concrete way to adapt the idea without copying.
+DON'T COPY: one boundary or mismatch.
 
-Return up to 4 strong, non-repeating projects. Fewer is fine. Never invent a name or URL.
-For every project: name, website, why it fits this category, one observed thing, what to learn, how the subject could adapt it, and what not to copy.
-Keep each project compact.
-Do NOT output internal labels, confidence scores, session IDs, batches, prompts, research notes, or a fixed-quota warning.
+Then a short section:
+📌 WHAT THIS CATEGORY SHOWS
+2–4 lines.
+
+Do not output NAMES:, batch IDs, session IDs, confidence labels, internal notes, or a generic warning.
 """
-    text, st = await complete(prompt, max_tokens=2300)
+    text, st = await complete(prompt, max_tokens=2800)
     if not text:
-        return "I couldn't complete this research pass right now. Try Refresh.", st, []
-    blocks = re.split(r"(?m)^\s*(?:🏆|🔹|•)\s*", text)
-    cleaned: list[str] = []
+        return "I couldn't complete the live competitor research right now. Try Refresh in a moment.", st, []
+
+    # Extract only candidates that have an explicit website in the returned block.
+    blocks = re.split(r"(?m)^\s*🏆\s*", text)
+    cleaned_blocks: list[str] = []
     names: list[str] = []
-    excluded = {x.lower().strip() for x in exclude}
+    used_lower = {x.lower().strip() for x in exclude}
     for block in blocks[1:]:
-        lines2 = [ln.strip() for ln in block.splitlines() if ln.strip()]
-        if not lines2:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
             continue
-        name = re.sub(r"\s*[—|-].*$", "", lines2[0]).strip(" *#")
-        urlm = re.search(r"https?://[^\s)\]>]+", block)
-        if not name or not urlm or name.lower() in excluded:
+        name = re.sub(r"\s*[—|-].*$", "", lines[0]).strip(" *#")
+        url_match = re.search(r"https?://[^\s)\]>]+", block)
+        if not name or not url_match:
             continue
-        url = urlm.group(0).rstrip(".,")
+        url = url_match.group(0).rstrip(".,")
         if any(x in url.lower() for x in ("x.com/", "twitter.com/", "t.me/", "telegram.me/")):
             continue
+        if name.lower() in used_lower or any(name.lower() == n.lower() for n in names):
+            continue
+        # Live-check the website. This is the final gate against hallucinated URLs.
         try:
             checked = await fetch_website(url)
         except Exception:
             checked = {"ok": False}
         if not checked.get("ok"):
             continue
-        if any(name.lower() == n.lower() for n in names):
-            continue
         names.append(name)
-        cleaned.append("🏆 " + "\n".join(lines2))
-        if len(names) >= max(1, min(batch_size, 4)):
+        cleaned_blocks.append("🏆 " + "\n".join(lines))
+        if len(names) >= batch_size:
             break
+
     if not names:
-        # Do not show a shabby empty competitor page. Give a truthful category-level result.
-        label = MODES.get(mode, mode).split(".")[0]
-        return (f"I couldn't verify a new project for {label} from the live sources I could reach.\n\n"
-                f"That doesn't mean there are none — I just don't want to invent one.\n\n"
-                f"Try Refresh for a new research pass, or open another category."), st, []
-    return "\n\n".join(cleaned), st, names
+        return "I couldn't verify enough genuinely relevant Web3 comparables for this category yet. Try another category or Refresh.", st, []
+    body = "\n\n".join(cleaned_blocks)
+    # Keep the category conclusion, but strip any internal leftovers.
+    summary_match = re.search(r"(?ms)^📌\s*WHAT THIS CATEGORY SHOWS\s*(.*)$", text)
+    if summary_match:
+        body += "\n\n📌 WHAT THIS CATEGORY SHOWS\n" + summary_match.group(1).strip()
+    return body, st, names
 
 
 # ---------------------------------------------------------------------------
@@ -1376,24 +1397,29 @@ Do NOT output internal labels, confidence scores, session IDs, batches, prompts,
 # ---------------------------------------------------------------------------
 
 HUMAN_VOICE = """
-Write like a sharp human who knows Web3 marketing — not corporate AI.
-Ban: "excellent opportunity", "leverage", "in today's landscape", "significantly enhance",
-"I would recommend implementing", "it is important to note", "maximize growth and engagement".
-Prefer natural lines: "One thing I'd test…", "You could turn this into…", "Honestly I'd lean into…"
-Vary sentence length. Be specific to the evidence. No invented metrics.
-Default: give 3–4 DISTINCT options (different angle/structure), not synonym rewrites.
+HUMAN VOICE — NON-NEGOTIABLE
+
+Write like a real person who actually spent time looking at the project. Not an AI consultant, corporate marketing agency, LinkedIn post, or business-school case study.
+
+The writing should feel like: “I went through this project and here’s what I’d actually do.”
+
+BAN these phrases unless they are part of a direct source quote:
+“I believe”, “I’m excited to”, “I see a huge opportunity”, “There is a strong opportunity to”, “leverage”, “maximize”, “unlock”, “drive engagement”, “increase visibility”, “build brand awareness”, “enhance the project’s presence”, “strategic partnerships”, “robust community”, “strong foundation”, “in today’s competitive landscape”, “take it to the next level”, “meaningful engagement”, “seamlessly”, “innovative approach”, “game-changing”, “high-impact”, “synergy”, “ecosystem growth”, “community-driven growth”, “establish a strong presence”, “position the project as”, “I would recommend”, “the project should consider”, “this presents an excellent opportunity”, “by leveraging”, “to maximize”, “to capitalize on”.
+
+Human does not mean sloppy. Have a point of view. It is fine to say:
+- “Honestly, I wouldn’t spend money on KOLs yet.”
+- “I’d fix this before paying creators.”
+- “The product itself gives you something much more interesting to market than the token.”
+- “I wouldn’t run an AMA just for the sake of having an AMA.”
+- “20 small creators probably makes more sense than paying one huge account.”
+
+Use natural wording such as “I’d actually test this first…”, “The interesting part here is…”, “One thing I’d push harder is…”, “I wouldn’t spend money on this yet.”, “This is where I think the project is leaving distribution on the table.”
+
+Do not force slang. Vary sentence length. Do not make every answer sound like the same person wrote a template.
+
+FACTS MUST COME FROM EVIDENCE. Never invent followers, activity, partnerships, metrics, product features, campaigns, outcomes or social accounts. Missing information stays missing.
 """
 
-
-MOBILE_OUTPUT = """
-TELEGRAM FORMAT:
-- Give ONE page at a time. Aim for 700–1400 characters unless the command genuinely needs more.
-- Use short headings, short paragraphs and bullets.
-- No markdown tables. No long numbered essays. No duplicate advice.
-- Every recommendation should include a concrete example or a sample of what it would look like.
-- Prefer: WHAT → HOW → EXAMPLE → WHY.
-- Never expose research/debug/meta language.
-"""
 
 PARTNERSHIP_RULES = """
 🤝 PARTNERSHIP & COLLABORATION
@@ -1417,51 +1443,64 @@ async def run_marketing_proposals(
     style: str = "full",
     prior_text: str = "",
 ) -> tuple[str, str]:
+    """Generate copyable, human outreach. Full mode is a set of genuinely different pitches, not a strategy dump."""
     style_guide = {
-        "full": "A complete proposal that can be sent to a project team.",
-        "short": "A concise proposal for a first conversation.",
-        "founder_dm": "A natural founder/dev DM opening a conversation.",
-        "x_dm": "A short X DM opener.",
-        "job": "A clear service/job pitch.",
-        "partner": "A partnership proposal with mutual value.",
-        "community": "A community-focused proposal.",
-        "30day": "A practical 30-day marketing plan.",
-        "direct": "Direct and confident proposal.",
-        "casual": "Warm, conversational proposal.",
-        "strategic": "More strategic proposal showing the thinking behind the plan.",
-        "user_pov": "External knowledgeable-observer approach, useful without sounding like a pitch.",
-        "marketer": "External marketer offering a concrete marketing observation and next step.",
-        "dev_dm": "Short founder/dev marketing-growth DM.",
-    }.get(style, "A complete proposal")
+        "full": "Give 4 genuinely different, copyable proposal angles. Each must be short enough to send to a founder/team and must propose ONE main marketing idea, not a whole marketing plan.",
+        "short": "Give 4 short, copyable pitches. Each uses a different marketing angle and is 4–7 natural sentences.",
+        "founder_dm": "Give 4 founder/dev DMs. Each should open a conversation around one specific observation and one useful idea. End with a natural invitation to hear more. No resume.",
+        "x_dm": "Give 4 very short X DMs. Each should be conversational, specific and easy to reply to. No corporate pitch.",
+        "job": "Give 4 natural job/service pitches. Clearly say the sender works in Web3 marketing/community/growth, but keep it conversational and tied to what was actually researched. No CV language.",
+        "partner": "Give 4 partnership proposals. Each should identify a different collaboration angle, explain the mutual fit, and show a concrete format. Do not dump partner names unless verified.",
+        "community": "Give 4 community-focused proposals. Each should be something the team could actually run and explain it naturally.",
+        "30day": "Give a compact 30-day execution proposal with 3–4 concrete moves and examples, written like a person explaining how they would approach the work.",
+        "quick": "Give 4 very short proposals, each built around a different specific observation and first test.",
+    }.get(style, "Give 4 genuinely different, copyable proposal angles.")
+
     prompt = f"""{GATE}
 {HUMAN_VOICE}
-{MOBILE_OUTPUT}
 
-TASK: Write a {style_guide}
+TASK: Write proposals/outreach for the project below.
 STYLE: {style}
+STYLE INSTRUCTION: {style_guide}
 
-EVIDENCE:
+PROJECT EVIDENCE:
 {evidence_brief(sources)}
 
-{("PRIOR OUTPUT — make the new version genuinely different:\n" + prior_text[:3000]) if prior_text else ""}
+PREVIOUS OUTPUT (avoid repeating its angle, wording or idea):
+{prior_text[:3500] if prior_text else "(none)"}
 
-IMPORTANT FOR PROPOSALS:
-- Do NOT start with "What I see", "I noticed", or a generic audit-style opening.
-- Start like a real person opening a conversation: greeting/context + why you're reaching out.
-- Then establish one or two project-specific observations naturally.
-- Then explain what you'd actually do, with concrete examples.
-- End properly: a natural invitation to continue the conversation, not a fake corporate CTA.
-- The proposal must feel ready to copy and send without editing.
-- Never speak as if already hired.
-- Never use generic agency language.
-- Do not make the user sound desperate or overly salesy.
+CRITICAL PROPOSAL RULES:
+1. These must sound like messages a real person could actually send to a founder/team. They are NOT an audit, report, roadmap or consultant deck.
+2. Do not dump 4 tactics into one message. Each option gets ONE main idea/angle.
+3. Start naturally. Examples of the rhythm you may use: “Hey, came across…”, “I was looking through…”, “One thing that caught my attention…”, “Honestly, I’d test…”. Do not mechanically reuse these openings.
+4. Give the founder a reason to reply. The message should create curiosity and make the next conversation easy.
+5. When proposing an idea, briefly say WHAT you would do and HOW it would look in practice. Include a concrete example when it helps.
+6. Do not pretend the sender is already hired. For a founder/dev DM, the sender is an outside marketer making a useful observation.
+7. For JOB PITCH, clearly offer marketing/community/growth services, but make it sound like a person, not a CV.
+8. For X DM, keep it genuinely short.
+9. For COMMUNITY, write something useful to the community rather than selling services.
+10. Every option must use a DIFFERENT marketing angle. Examples of different angles: creators, ecosystem/community distribution, product/story content, referral/community loop, education, launch/event format, UX/conversion, positioning, real-world narrative. Only use angles that fit the evidence.
+11. If an idea depends on an unverified fact, do not present that fact as true.
+12. Never output “WHAT / HOW / EXAMPLE / WHY” as a rigid consulting template. We want natural prose.
+13. Never output a giant numbered strategy.
+14. Never repeat the same idea with synonyms.
 
-For a founder/dev DM, keep it human and short.
-For a job pitch, clearly say what service the user offers and what they can take off the team's plate.
-For direct/casual/strategic/user_pov/marketer/dev_dm, preserve the intended role — do not turn an observation into a job pitch unless the style asks for it.
-For full/short/30day, use actual tactics that fit the evidence: creators/KOLs, PR, partnerships, community, campaigns, regional distribution, quests, product-led growth, events, discovery platforms, etc. only when relevant.
+OUTPUT FORMAT:
+Option 1 — [short human label]
+[copyable message/proposal]
+
+Option 2 — [short human label]
+[copyable message/proposal]
+
+Option 3 — [short human label]
+[copyable message/proposal]
+
+Option 4 — [short human label]
+[copyable message/proposal]
+
+Keep each option compact. The user must be able to copy one and send it without rewriting it.
 """
-    text, st = await complete_fast(prompt, max_tokens=2000)
+    text, st = await complete_fast(prompt, max_tokens=2400)
     return text or _fallback("proposals", sources, st), st
 
 
@@ -1524,37 +1563,39 @@ Rules:
 async def run_shuffle(
     original: str,
     *,
-    instruction: str = "genuinely different human variations",
+    instruction: str = "genuinely different human marketing proposals",
     sources: dict[str, Any] | None = None,
     prior: list[str] | None = None,
 ) -> tuple[str, str]:
-    prompt = f"""{HUMAN_VOICE}
+    """Generate new angles rather than paraphrasing the previous output."""
+    prompt = f"""{GATE}
+{HUMAN_VOICE}
 
-Shuffle the text below into 3–4 GENUINELY different human variations.
-Same intelligence and facts. Different voice, structure, approach.
-NOT synonym swaps. NOT corporate AI tone.
-
-INSTRUCTION: {instruction}
+Create 4 NEW human marketing options for the same project/context.
+Do NOT rewrite the original. Do NOT synonym-swap it. Do NOT keep the same marketing angle.
+Each option must propose a meaningfully different thing the user could say or send.
 
 ORIGINAL:
 {original[:3500]}
 
-PROJECT CONTEXT (optional):
-{evidence_brief(sources) if sources else "(none)"}
+PROJECT CONTEXT:
+{evidence_brief(sources) if sources else '(none)'}
 
-AVOID repeating these prior variations:
-{prior or "(none)"}
+ALREADY USED OPTIONS / ANGLES:
+{prior or '(none)'}
 
-Output:
-Option 1 — [label]
-...
-Option 2 — [label]
-...
-Option 3 — [label]
+For each option:
+- use a different marketing angle
+- keep it copyable and natural
+- sound like someone who researched the project
+- include a concrete example or execution detail when useful
+- never sound like an agency deck
+- never repeat an already-used idea
+
+Output exactly 4 options with short labels.
 """
-    text, st = await complete_fast(prompt, max_tokens=1500)
-    return text or f"⚠️ Shuffle failed ({st}). Wait and retry.", st
-
+    text, st = await complete_fast(prompt, max_tokens=1900)
+    return text or f"⚠️ Couldn’t generate a genuinely different set yet. Try Refresh.", st
 
 
 async def run_examples(command: str, sources: dict[str, Any] | None, current: str = "") -> tuple[str, str]:
